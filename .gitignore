@@ -1,0 +1,22 @@
+# Godot 4+ specific ignores
+.godot/
+/android/
+.import/
+export.cfg
+export_credentials.cfg
+
+# Mono/C# specific ignores (only if using the .NET version)
+.mono/
+data_*/
+mono_crash.*
+*.sln
+*.csproj
+
+# Build outputs (if you export your game into a 'build' folder)
+build/
+dist/
+
+# OS-specific overrides
+.DS_Store
+Thumbs.db
+

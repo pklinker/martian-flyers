@@ -1,0 +1,12 @@
+[gd_scene format=3 uid="uid://crsi5ow00ilie"]
+
+[ext_resource type="Script" uid="uid://bu6a0eddfl3su" path="res://ui/ssd_demo.gd" id="1_ssddemo"]
+
+[node name="SSDDemo" type="Control" unique_id=1019940606]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_ssddemo")
