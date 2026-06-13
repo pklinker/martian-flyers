@@ -23,6 +23,11 @@ enum SystemType {
 @export var display_name: String = "Unnamed Flyer"
 @export var faction: String = "Helium"
 
+## Named officers, senior first. A bridge hit (or an unlucky crew hit) strikes
+## one down for genre-voice flavor — see DamageResolver. The mechanical effect
+## is still the box marked off; the name is narration on top.
+@export var officers: Array[String] = []
+
 ## Armor boxes per facing, indexed by relative bearing 0..5
 ## (bow, fwd-stbd, aft-stbd, stern, aft-port, fwd-port).
 @export var armor: Array[int] = [0, 0, 0, 0, 0, 0]

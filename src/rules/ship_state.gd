@@ -22,6 +22,15 @@ var systems_remaining: Dictionary = {}    # SystemType -> int
 var grounded: bool = false
 var is_destroyed: bool = false
 
+# --- Criticals (capability erosion with flavor; see DamageResolver) ---
+# Active fires: each one burns an internal box at upkeep and may spread, until
+# damage control beats it out. Steering jam: turns the rudder is fouled — the
+# ship can only fly straight while > 0 (ticked down each upkeep). Surviving
+# officers: a bridge/crew critical strikes one down by name.
+var fires: int = 0
+var steering_jammed: int = 0
+var officers: Array[String] = []
+
 # --- Gun mounts (parallel to def.gun_mounts) ---
 # Each: { "destroyed": bool, "reload": int (turns until ready), "manned": bool }
 var gun_states: Array[Dictionary] = []
@@ -44,6 +53,7 @@ static func create(ship_def: ShipDef, p_side: int, start_hex: Vector2i, start_fa
 	s.hex = start_hex
 	s.facing = start_facing
 	s.armor_remaining.assign(ship_def.armor)
+	s.officers = ship_def.officers.duplicate()
 	for t in ship_def.systems.keys():
 		s.systems_remaining[t] = ship_def.systems[t]
 	for m in ship_def.gun_mounts:
@@ -130,7 +140,19 @@ func is_buoyant() -> bool:
 	return sys(ShipDef.SystemType.BUOYANCY) > def.grounding_threshold
 
 func can_turn() -> bool:
+	# A fouled rudder can't answer the helm: the flyer holds its heading until
+	# the jam clears (ticked down at upkeep).
+	if steering_jammed > 0:
+		return false
 	return straight_moved >= turn_mode()
+
+## Strike down the senior surviving officer, returning their name (or "" when
+## none are left). The mechanical loss is the box marked off elsewhere; this is
+## the name for the log.
+func pop_officer() -> String:
+	if officers.is_empty():
+		return ""
+	return officers.pop_front()
 
 func crew_pool() -> int:
 	return sys(ShipDef.SystemType.CREW)

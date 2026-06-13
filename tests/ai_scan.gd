@@ -1,27 +1,13 @@
 extends SceneTree
-## Throwaway balance probe: run many ShipAI-vs-ShipAI battles on the bounded
-## map and report win split + timeouts. Not part of the suite.
+## Throwaway balance probe: run many ShipAI-vs-ShipAI battles on the engine's
+## bounded map and report win split + timeouts. Not part of the suite.
 ##   Godot --headless --path . -s res://tests/ai_scan.gd -- 200
+##
+## The playfield is whatever TurnEngine defines (currently the large 48x48 open
+## field with centred starts) — this tool defers to engine.legal_moves_for so it
+## tracks the real movement rule rather than re-deriving its own bounds.
 
-const COLS := 16
-const ROWS := 12
 const MAX_TURNS := 80
-
-func _row_off(q: int) -> int:
-	return -(q >> 1)
-
-func _in_bounds(h: Vector2i) -> bool:
-	if h.x < 0 or h.x >= COLS:
-		return false
-	var off := _row_off(h.x)
-	return h.y >= off and h.y < off + ROWS
-
-func _bounded_moves(engine: TurnEngine, s: ShipState) -> Array[Dictionary]:
-	var out: Array[Dictionary] = []
-	for m in engine.legal_moves_for(s):
-		if _in_bounds(m["hex"]):
-			out.append(m)
-	return out
 
 
 func _initialize() -> void:
@@ -52,7 +38,7 @@ func _initialize() -> void:
 					if not TurnEngine.moves_on_impulse(s.speed, imp) \
 							or s.is_destroyed or s.grounded:
 						continue
-					var moves := _bounded_moves(engine, s)
+					var moves := engine.legal_moves_for(s)
 					if not moves.is_empty():
 						engine.execute_move(s, brains[i].choose_move(engine, s, moves))
 			for i in 2:

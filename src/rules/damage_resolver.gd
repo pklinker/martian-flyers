@@ -20,6 +20,14 @@ const DAC_WEIGHTS := {
 }
 const GUN_HIT_WEIGHT := 8  # chance an internal hit takes out a gun mount instead
 
+## Critical-hit dials (all d6, see _hit_system and TurnEngine upkeep).
+const FIRE_IGNITE_ROLL := 6    # combustible internal hit at/above this lights a fire
+const FIRE_SPREAD_ROLL := 6    # an active fire at/above this spawns another at upkeep
+const FIRE_DOUSE_ROLL := 4     # a damage-control crew at/above this beats one fire out
+const STEERING_JAM_ROLL := 5   # a rudder hit at/above this fouls the steering
+const CREW_OFFICER_ROLL := 6   # a crew hit at/above this claims a named officer
+const MAX_FIRES := 4           # a flyer can only burn in so many places at once
+
 ## Resolves one gun firing at one target. Returns a report Dictionary the UI
 ## can render verbatim into a combat log:
 ## { "hit": bool, "roll": int, "needed": int, "range": int,
@@ -103,9 +111,30 @@ static func _apply_damage(firer: ShipState, target: ShipState, damage: int,
 	report["destroyed_target"] = target.is_destroyed
 	target.damage_taken.emit(report)
 
+## Applies one internal hit from an active fire: no firer, no armour, no facing.
+## Fire damage cannot itself spark a fresh critical (allow_crit = false) — spread
+## is handled separately at upkeep — so a single fire can't chain-ignite the ship.
+## Emits damage_taken so the SSD flashes; returns the report.
+static func apply_fire_damage(target: ShipState, rng: RandomNumberGenerator) -> Dictionary:
+	var report := {
+		"fire": true, "firer": "fire", "gun": "fire",
+		"target": target.def.display_name,
+		"hit": true, "roll": 0, "needed": 0, "range": 0,
+		"facing_struck": -1, "damage": 1, "armor_absorbed": 0,
+		"internals": [], "destroyed_target": false,
+		"los_blocked": false, "dust_penalty": 0,
+	}
+	if not target.is_destroyed:
+		report["internals"].append(_roll_internal(target, rng, -1, false))
+	report["destroyed_target"] = target.is_destroyed
+	target.damage_taken.emit(report)
+	return report
+
 ## One internal hit on the DAC. Returns { "system": String, "effect": String }.
+## `allow_crit` gates the secondary criticals (fire ignition, crew-officer
+## casualties); fire-burn hits pass false so a fire can't ignite a new fire.
 static func _roll_internal(target: ShipState, rng: RandomNumberGenerator,
-		struck_facing: int = -1) -> Dictionary:
+		struck_facing: int = -1, allow_crit: bool = true) -> Dictionary:
 	# Build the live weight table: only systems with boxes remaining,
 	# plus surviving gun mounts.
 	var entries: Array = []
@@ -136,11 +165,12 @@ static func _roll_internal(target: ShipState, rng: RandomNumberGenerator,
 				target.gun_states[gi]["destroyed"] = true
 				return { "system": str(target.def.gun_mounts[gi]["label"]),
 						"effect": "gun mount destroyed" }
-			return _hit_system(target, e["type"], rng, struck_facing)
+			return _hit_system(target, e["type"], rng, struck_facing, allow_crit)
 	return { "system": "?", "effect": "" }  # unreachable
 
 static func _hit_system(target: ShipState, t: ShipDef.SystemType,
-		rng: RandomNumberGenerator, struck_facing: int = -1) -> Dictionary:
+		rng: RandomNumberGenerator, struck_facing: int = -1,
+		allow_crit: bool = true) -> Dictionary:
 	target.systems_remaining[t] = target.sys(t) - 1
 	var name: String = ShipDef.SystemType.keys()[t].capitalize()
 	var effect := "box destroyed"
@@ -152,6 +182,17 @@ static func _hit_system(target: ShipState, t: ShipDef.SystemType,
 				target.is_destroyed = true
 				target.destroyed.emit("magazine explosion")
 				effect = "MAGAZINE EXPLOSION — the flyer is consumed in radium fire"
+			elif _ignite(target, allow_crit, rng):
+				effect = "box destroyed — radium fire in the magazine!"
+		ShipDef.SystemType.ENGINE:
+			# A holed radium engine can catch — fire breaks out in the engine room.
+			if _ignite(target, allow_crit, rng):
+				effect = "box destroyed — fire breaks out in the engine room"
+		ShipDef.SystemType.RUDDER:
+			# A jammed rudder leaves the flyer unable to answer the helm.
+			if rng.randi_range(1, 6) >= STEERING_JAM_ROLL:
+				target.steering_jammed = maxi(target.steering_jammed, 2)
+				effect = "rudder fouled — steering jammed"
 		ShipDef.SystemType.BUOYANCY:
 			# Route hit to port (facings 4,5) or stbd (1,2); bow/stern is 50/50.
 			var hit_port: bool
@@ -175,11 +216,29 @@ static func _hit_system(target: ShipState, t: ShipDef.SystemType,
 					side, maxi(target.sys(t) - target.def.grounding_threshold, 0)]
 		ShipDef.SystemType.CREW:
 			effect = "casualties among the deck crew"
+			# Occasionally a named officer is among the fallen.
+			if allow_crit and rng.randi_range(1, 6) >= CREW_OFFICER_ROLL:
+				var who := target.pop_officer()
+				if who != "":
+					effect = "%s falls among the crew" % who
 		ShipDef.SystemType.BRIDGE:
-			if target.sys(t) == 0:
+			# The command deck: a hit there strikes down an officer by name.
+			var who := target.pop_officer()
+			if who != "":
+				effect = "%s is struck down — command shaken" % who
+			elif target.sys(t) == 0:
 				effect = "bridge destroyed — command crippled"
 
 	if t == ShipDef.SystemType.BUOYANCY and not target.is_buoyant():
 		effect = "below the falling line — the flyer is going down"
 
 	return { "system": name, "effect": effect }
+
+## Try to light one fire. Returns true if a new fire took hold.
+static func _ignite(target: ShipState, allow_crit: bool, rng: RandomNumberGenerator) -> bool:
+	if not allow_crit or target.fires >= MAX_FIRES:
+		return false
+	if rng.randi_range(1, 6) >= FIRE_IGNITE_ROLL:
+		target.fires += 1
+		return true
+	return false

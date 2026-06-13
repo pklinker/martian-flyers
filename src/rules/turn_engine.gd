@@ -20,6 +20,7 @@ signal phase_changed(phase: Phase)
 signal impulse_advanced(impulse: int, moved_ships: Array)
 signal shot_resolved(report: Dictionary)
 signal damage_control_repaired(ship: ShipState, tanks_remaining: int)
+signal fire_changed(ship: ShipState, fires: int, note: String)
 signal game_over(winning_side: int, reason: String)
 
 var ships: Array[ShipState] = []
@@ -218,27 +219,58 @@ func resolve_fire_phase() -> void:
 func run_upkeep() -> void:
 	for s in ships:
 		s.tick_reloads()
-		# Damage control runs BEFORE the falling-line check: each allocated DC
-		# crew gives a 1-in-3 chance to patch one buoyancy tank (armor is never
-		# repairable). A flyer sitting right on its falling line can thus be
-		# lifted back above it this turn — clawing back from the brink — rather
-		# than settling while its crew still has the tanks half-patched.
-		for _i in int(s.allocation.get("damage_control", 0)):
-			if s.sys(ShipDef.SystemType.BUOYANCY) < s.def.system_count(ShipDef.SystemType.BUOYANCY) \
-					and rng.randi_range(1, 6) >= 5:
-				s.systems_remaining[ShipDef.SystemType.BUOYANCY] += 1
-				# Patch the lower side to reduce the list; port first when equal.
-				if s.port_buoyancy <= s.stbd_buoyancy:
-					s.port_buoyancy += 1
-				else:
-					s.stbd_buoyancy += 1
-				damage_control_repaired.emit(s, s.sys(ShipDef.SystemType.BUOYANCY))
+		# A fouled rudder works itself free a little each turn.
+		if s.steering_jammed > 0:
+			s.steering_jammed -= 1
+		_run_damage_control(s)
+		_burn_fires(s)
 		# ...then settle onto the dead sea bottom if still at/below the line.
 		s.enforce_buoyancy()
 	turn_number += 1
 	_check_victory()
 	if phase != Phase.GAME_OVER:
 		_set_phase(Phase.ALLOCATION)
+
+
+## Damage control runs BEFORE the falling-line check (so a flyer on the line can
+## claw back) and BEFORE fires burn (so a crew can save a box). Each allocated DC
+## crew acts once: while any fire burns it fights the fire (priority — a fire
+## spreads), otherwise it patches a buoyancy tank. Armor is never repairable.
+func _run_damage_control(s: ShipState) -> void:
+	var buoy_total := s.def.system_count(ShipDef.SystemType.BUOYANCY)
+	for _i in int(s.allocation.get("damage_control", 0)):
+		if s.fires > 0:
+			if rng.randi_range(1, 6) >= DamageResolver.FIRE_DOUSE_ROLL:
+				s.fires -= 1
+				fire_changed.emit(s, s.fires, "damage control beats out a fire")
+		elif s.sys(ShipDef.SystemType.BUOYANCY) < buoy_total and rng.randi_range(1, 6) >= 5:
+			s.systems_remaining[ShipDef.SystemType.BUOYANCY] += 1
+			# Patch the lower side to reduce the list; port first when equal.
+			if s.port_buoyancy <= s.stbd_buoyancy:
+				s.port_buoyancy += 1
+			else:
+				s.stbd_buoyancy += 1
+			damage_control_repaired.emit(s, s.sys(ShipDef.SystemType.BUOYANCY))
+
+
+## Each fire still burning after damage control eats one internal box (via the
+## DAC) and may spread to a fresh fire. Snapshot the count so fires born this
+## turn (by spread) wait until next turn to burn.
+func _burn_fires(s: ShipState) -> void:
+	var burning := s.fires
+	for _i in burning:
+		if s.is_destroyed or s.fires == 0:
+			break
+		var rep := DamageResolver.apply_fire_damage(s, rng)
+		var note := "fire burns"
+		var internals := rep["internals"] as Array
+		if not internals.is_empty():
+			note = "fire burns — %s: %s" % [internals[0]["system"], internals[0]["effect"]]
+		fire_changed.emit(s, s.fires, note)
+		if not s.is_destroyed and s.fires < DamageResolver.MAX_FIRES \
+				and rng.randi_range(1, 6) >= DamageResolver.FIRE_SPREAD_ROLL:
+			s.fires += 1
+			fire_changed.emit(s, s.fires, "the fire spreads")
 
 func _check_victory() -> void:
 	for s in ships:

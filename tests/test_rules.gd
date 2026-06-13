@@ -61,6 +61,16 @@ func _init() -> void:
 	_suite("Listing")
 	_test_listing()
 
+	_suite("Critical hits")
+	_test_steering_jam()
+	_test_fire_ignite_and_burn()
+	_test_fire_doused()
+	_test_officer_casualties()
+
+	_suite("Ship classes")
+	_test_new_ship_classes()
+	_test_new_class_battles()
+
 	_suite("AI")
 	_test_ai_evaluator()
 	_test_ai_battle()
@@ -781,6 +791,24 @@ func _test_ai_battle() -> void:
 func _run_ai_battle(seed_val: int) -> Dictionary:
 	var engine := TurnEngine.new()
 	engine.setup(seed_val)
+	return _play_out(engine)
+
+
+## Set two named classes nose-to-nose on the open field and let two ShipAIs
+## fight it out — for exercising matchups the default setup() doesn't cover.
+func _run_ai_battle_classes(a_id: StringName, b_id: StringName, seed_val: int) -> Dictionary:
+	var engine := TurnEngine.new()
+	engine.setup(seed_val)   # seeds rng + places terrain
+	engine.ships.assign([
+		ShipState.create(ShipLibrary.ship(a_id), 0, Vector2i(18, 12), 1),
+		ShipState.create(ShipLibrary.ship(b_id), 1, Vector2i(30, 6), 4),
+	])
+	return _play_out(engine)
+
+
+## Drive a fully set-up two-ship engine with a ShipAI per side until it resolves
+## or hits the turn cap. Returns { "winner": int, "clean": bool }.
+func _play_out(engine: TurnEngine) -> Dictionary:
 	var brains := [ShipAI.for_ship(engine.ships[0].def), ShipAI.for_ship(engine.ships[1].def)]
 	var res := { "winner": -1, "clean": true }
 	engine.game_over.connect(func(side: int, _r: String) -> void: res["winner"] = side)
@@ -925,3 +953,183 @@ func _test_full_battle() -> void:
 			if int(s.systems_remaining[t]) < 0:
 				invariants_ok = false
 	_check(invariants_ok, "no armor or system box count went negative during the battle")
+
+
+# ---------------------------------------------------------------------------
+# Critical hits: fires, steering jams, named officer casualties
+# ---------------------------------------------------------------------------
+
+## Smallest seed whose FIRST rng.randi_range(1,6) lands in [lo, hi]. Lets a test
+## force a single crit roll deterministically when that roll is the first the
+## injected rng makes.
+func _seed_first_roll(lo: int, hi: int) -> int:
+	for cand in range(1, 4000):
+		var p := RandomNumberGenerator.new()
+		p.seed = cand
+		var r := p.randi_range(1, 6)
+		if r >= lo and r <= hi:
+			return cand
+	return -1
+
+
+## Total surviving "capability": system boxes plus live gun mounts. A burning
+## fire eats one of these each turn (a box or a mount), so this strictly drops.
+func _capability_sum(s: ShipState) -> int:
+	var total := 0
+	for t in s.systems_remaining.keys():
+		total += int(s.systems_remaining[t])
+	for g in s.gun_states:
+		if not g["destroyed"]:
+			total += 1
+	return total
+
+
+func _armor_total(def: ShipDef) -> int:
+	var total := 0
+	for a in def.armor:
+		total += int(a)
+	return total
+
+
+func _test_steering_jam() -> void:
+	var ship := ShipState.create(ShipLibrary.ship(&"helium_scout"), 0, Vector2i(0, 0), 0)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = _seed_first_roll(5, 6)   # rudder jam needs a 5+
+	DamageResolver._hit_system(ship, ShipDef.SystemType.RUDDER, rng, 0)
+	_check(ship.steering_jammed > 0, "a rudder crit (roll 5+) jams the steering")
+	_check(not ship.can_turn(), "a jammed ship cannot turn")
+
+	# Even with turn mode fully satisfied, only the straight move is offered.
+	ship.straight_moved = 99
+	var has_turn := false
+	for m in TurnEngine.legal_moves(ship, []):
+		if m["kind"] != "straight":
+			has_turn = true
+	_check(not has_turn, "a jammed ship's legal moves are straight-only")
+
+	# A clean rudder hit (roll 4-) does not jam.
+	var ship2 := ShipState.create(ShipLibrary.ship(&"helium_scout"), 0, Vector2i(0, 0), 0)
+	var rng2 := RandomNumberGenerator.new()
+	rng2.seed = _seed_first_roll(1, 4)
+	DamageResolver._hit_system(ship2, ShipDef.SystemType.RUDDER, rng2, 0)
+	_check_eq(ship2.steering_jammed, 0, "a rudder hit rolling 4- leaves the steering free")
+
+	# The jam works free over upkeeps: set to 2, it survives one upkeep (still
+	# jammed for the next movement phase) and clears on the second.
+	var engine := TurnEngine.new()
+	engine.setup(1)
+	var s := engine.ships[0]
+	s.steering_jammed = 2
+	engine.run_upkeep()
+	_check_eq(s.steering_jammed, 1, "jam ticks down one at upkeep (still fouled next move)")
+	engine.run_upkeep()
+	_check_eq(s.steering_jammed, 0, "jam clears after a second upkeep")
+
+
+func _test_fire_ignite_and_burn() -> void:
+	# An engine crit on a 6 starts a fire.
+	var ship := ShipState.create(ShipLibrary.ship(&"helium_scout"), 0, Vector2i(0, 0), 0)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = _seed_first_roll(6, 6)
+	DamageResolver._hit_system(ship, ShipDef.SystemType.ENGINE, rng, 0)
+	_check(ship.fires >= 1, "an engine crit (roll 6) lights a fire")
+
+	# An unfought fire burns a box at upkeep and keeps burning.
+	var engine := TurnEngine.new()
+	engine.setup(1)
+	var cruiser := engine.ships[1]   # big enough that one burn can't sink it
+	cruiser.fires = 1
+	var before := _capability_sum(cruiser)
+	var burns := { "n": 0 }
+	engine.fire_changed.connect(func(_sh: ShipState, _f: int, _note: String) -> void:
+		burns["n"] += 1)
+	engine.run_upkeep()
+	_check(int(burns["n"]) >= 1, "an active fire produces a burn event at upkeep")
+	_check(_capability_sum(cruiser) < before, "an unfought fire eats a box or mount")
+	_check(cruiser.fires >= 1, "the fire keeps burning without damage control")
+
+
+func _test_fire_doused() -> void:
+	var engine := TurnEngine.new()
+	engine.setup(1)
+	# Scout (ships[0]) consumes no rng at upkeep (no fires, no DC), so the
+	# cruiser's firefight roll is the first rng draw — seed it to succeed.
+	var cruiser := engine.ships[1]
+	cruiser.fires = 1
+	cruiser.allocation = { "guns": [], "engine": 0, "damage_control": 1 }
+	engine.rng.seed = _seed_first_roll(DamageResolver.FIRE_DOUSE_ROLL, 6)
+	engine.run_upkeep()
+	_check_eq(cruiser.fires, 0, "a damage-control crew (roll 4+) puts the fire out")
+
+
+func _test_officer_casualties() -> void:
+	# A bridge hit strikes down a named officer (deterministic — no roll needed).
+	var ship := ShipState.create(ShipLibrary.ship(&"zodanga_cruiser"), 0, Vector2i(0, 0), 0)
+	var n0 := ship.officers.size()
+	_check(n0 > 0, "the cruiser starts with a named officer roster")
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 1
+	var rep := DamageResolver._hit_system(ship, ShipDef.SystemType.BRIDGE, rng, -1)
+	_check_eq(ship.officers.size(), n0 - 1, "a bridge hit removes one officer from the roster")
+	_check("struck down" in str(rep["effect"]), "the bridge-hit effect names the fallen officer")
+
+	# A crew crit on a 6 claims an officer; the effect names them.
+	var ship2 := ShipState.create(ShipLibrary.ship(&"zodanga_cruiser"), 0, Vector2i(0, 0), 0)
+	var n2 := ship2.officers.size()
+	var rng2 := RandomNumberGenerator.new()
+	rng2.seed = _seed_first_roll(6, 6)
+	var rep2 := DamageResolver._hit_system(ship2, ShipDef.SystemType.CREW, rng2, -1)
+	_check_eq(ship2.officers.size(), n2 - 1, "a crew crit (roll 6) claims an officer")
+	_check("among the crew" in str(rep2["effect"]), "the crew-crit effect names the fallen officer")
+
+	# With the roster exhausted, further bridge hits fall back gracefully.
+	var ship3 := ShipState.create(ShipLibrary.ship(&"helium_scout"), 0, Vector2i(0, 0), 0)
+	for _i in ship3.officers.size() + 1:
+		DamageResolver._hit_system(ship3, ShipDef.SystemType.BRIDGE, rng, -1)
+	_check(ship3.officers.is_empty(), "an exhausted roster simply stays empty (no crash)")
+
+
+# ---------------------------------------------------------------------------
+# New ship classes: one-man flyer and battleship
+# ---------------------------------------------------------------------------
+
+func _test_new_ship_classes() -> void:
+	for id in [&"one_man_flyer", &"helium_battleship"]:
+		var def := ShipLibrary.ship(id)
+		_check(def != null, "%s class is registered" % id)
+		_check_eq(def.armor.size(), 6, "%s has six armor facings" % id)
+		_check(def.system_count(ShipDef.SystemType.CREW) > 0, "%s has a crew pool" % id)
+		_check(not def.gun_mounts.is_empty(), "%s mounts at least one gun" % id)
+		var guns_ok := true
+		for m in def.gun_mounts:
+			if ShipLibrary.gun(m["gun_id"]) == null:
+				guns_ok = false
+		_check(guns_ok, "%s mounts all reference real guns" % id)
+		var st := ShipState.create(def, 0, Vector2i(0, 0), 0)
+		_check(st.effective_max_speed() > 0, "%s rates a positive top speed" % id)
+		_check(not st.officers.is_empty(), "%s carries named officers" % id)
+
+	# Class identities: the battleship is the heaviest hull, the one-man the fastest.
+	var bb := ShipLibrary.ship(&"helium_battleship")
+	var om := ShipLibrary.ship(&"one_man_flyer")
+	_check(_armor_total(bb) > _armor_total(ShipLibrary.ship(&"zodanga_cruiser")),
+			"battleship out-armours the cruiser")
+	_check(om.base_max_speed > ShipLibrary.ship(&"helium_scout").base_max_speed,
+			"one-man flyer is faster than the scout")
+
+
+func _test_new_class_battles() -> void:
+	# Battleship vs cruiser: two hulls that can hurt each other resolve decisively.
+	var decided := 0
+	for k in [1, 2, 3]:
+		var r := _run_ai_battle_classes(&"helium_battleship", &"zodanga_cruiser", k * 7919 + 3)
+		_check(r["clean"], "battleship/cruiser battle (key %d) kept every box >= 0" % k)
+		if int(r["winner"]) >= 0:
+			decided += 1
+	_check(decided >= 2, "battleship vs cruiser resolves decisively (got %d/3)" % decided)
+
+	# One-man vs scout: a light exotic matchup — assert it runs without invariant
+	# violations (a fast kiter duel need not always reach a kill within the cap).
+	for k in [1, 2]:
+		var r2 := _run_ai_battle_classes(&"one_man_flyer", &"helium_scout", k * 104729 + 1)
+		_check(r2["clean"], "one-man/scout battle (key %d) kept every box >= 0" % k)

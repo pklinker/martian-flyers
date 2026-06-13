@@ -161,6 +161,15 @@ func _draw() -> void:
 		ship.port_buoyancy, ship.stbd_buoyancy,
 		ship.def.grounding_threshold, ship.turn_mode(), list_info]
 	draw_string(font, Vector2(MARGIN, y), status, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, INK)
+	# Critical-state banner line: fires burning and a fouled rudder, in alarm red.
+	var crit := ""
+	if ship.fires > 0:
+		crit += "  %d FIRE%s" % [ship.fires, "" if ship.fires == 1 else "S"]
+	if ship.steering_jammed > 0:
+		crit += "  STEERING JAMMED"
+	if crit != "":
+		draw_string(font, Vector2(MARGIN, y + 16.0), crit.strip_edges(),
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 12, DAMAGE_X)
 	if ship.is_destroyed:
 		_draw_banner(font, "DESTROYED")
 	elif ship.grounded:

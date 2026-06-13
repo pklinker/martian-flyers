@@ -1,7 +1,8 @@
 class_name ShipLibrary
-## Concrete data for v1: three gun sizes and the two starting ship classes.
-## Built in code for now; trivially migrated to .tres resources later if you
-## want designers (or future-you) editing stats outside the codebase.
+## Concrete data for v1: the radium guns/torpedo and the ship classes
+## (scout, cruiser, one-man flyer, battleship). Built in code for now;
+## trivially migrated to .tres resources later if you want designers (or
+## future-you) editing stats outside the codebase.
 
 static var _guns: Dictionary = {}
 static var _ships: Dictionary = {}
@@ -86,6 +87,7 @@ static func _ensure_built() -> void:
 	scout.id = &"helium_scout"
 	scout.display_name = "Helium Scout Flyer"
 	scout.faction = "Helium"
+	scout.officers.assign(["Dwar Kantos Kan", "Padwar Tan Gama"])
 	scout.armor.assign([3, 2, 1, 1, 1, 2])          # bow-heavy, thin aft
 	scout.systems = {
 		ShipDef.SystemType.BUOYANCY: 8,
@@ -117,6 +119,7 @@ static func _ensure_built() -> void:
 	cruiser.id = &"zodanga_cruiser"
 	cruiser.display_name = "Zodangan Patrol Cruiser"
 	cruiser.faction = "Zodanga"
+	cruiser.officers.assign(["Dwar Bal Tut", "Padwar Sang Tal", "Padwar Vor Daj"])
 	cruiser.armor.assign([5, 4, 4, 3, 4, 4])
 	cruiser.systems = {
 		ShipDef.SystemType.BUOYANCY: 14,
@@ -139,3 +142,67 @@ static func _ensure_built() -> void:
 	cruiser.grounding_threshold = 3
 	cruiser.turn_mode_by_speed.assign([1, 1, 2, 2, 3, 4])
 	_ships[cruiser.id] = cruiser
+
+	# --- One-Man Flyer ------------------------------------------------------
+	# The Barsoom courier: a single rider on a tiny scout. Blistering speed and
+	# nimble, but eggshell-thin and crewed by barely enough hands to both fly
+	# fast and work its one gun — the extreme end of the scout's squeeze.
+	var one_man := ShipDef.new()
+	one_man.id = &"one_man_flyer"
+	one_man.display_name = "One-Man Flyer"
+	one_man.faction = "Helium"
+	one_man.officers.assign(["Padwar Kor Tan"])
+	one_man.armor.assign([2, 1, 1, 1, 1, 1])
+	one_man.systems = {
+		ShipDef.SystemType.BUOYANCY: 4,
+		ShipDef.SystemType.ENGINE: 3,
+		ShipDef.SystemType.PROPELLER: 3,
+		ShipDef.SystemType.RUDDER: 2,
+		ShipDef.SystemType.BRIDGE: 1,
+		ShipDef.SystemType.CREW: 3,
+		ShipDef.SystemType.MAGAZINE: 1,
+		ShipDef.SystemType.DAMAGE_CONTROL: 1,
+	}
+	one_man.gun_mounts.assign([
+		{ "gun_id": &"light_gun", "arcs": [5, 0, 1], "label": "Bow Gun" },
+	])
+	one_man.base_max_speed = 9
+	one_man.speed_per_engine_crew = 5        # top speed 9 costs 2 of 3 crew
+	one_man.grounding_threshold = 0
+	one_man.turn_mode_by_speed.assign([1, 1, 1, 1, 1, 2, 2, 2, 2, 3])
+	_ships[one_man.id] = one_man
+
+	# --- Helium Battleship --------------------------------------------------
+	# A capital flyer: walls of armour, a deep crew, and a broadside of heavies.
+	# Ponderous to turn and dear to crew at speed, but it dominates a line of
+	# battle — the heavy end of the brawler family.
+	var battleship := ShipDef.new()
+	battleship.id = &"helium_battleship"
+	battleship.display_name = "Helium Battleship"
+	battleship.faction = "Helium"
+	battleship.officers.assign([
+		"Odwar Hor Vastus", "Dwar Djor Kantos", "Padwar Vad Varo", "Padwar Tan Hadron"])
+	battleship.armor.assign([7, 6, 6, 5, 6, 6])
+	battleship.systems = {
+		ShipDef.SystemType.BUOYANCY: 20,
+		ShipDef.SystemType.ENGINE: 8,
+		ShipDef.SystemType.PROPELLER: 5,
+		ShipDef.SystemType.RUDDER: 4,
+		ShipDef.SystemType.BRIDGE: 3,
+		ShipDef.SystemType.CREW: 20,
+		ShipDef.SystemType.MAGAZINE: 3,
+		ShipDef.SystemType.DAMAGE_CONTROL: 3,
+	}
+	battleship.gun_mounts.assign([
+		{ "gun_id": &"heavy_gun", "arcs": [5, 0, 1], "label": "Bow Battery" },
+		{ "gun_id": &"heavy_gun", "arcs": [1, 2], "label": "Fwd Starboard Battery" },
+		{ "gun_id": &"heavy_gun", "arcs": [1, 2], "label": "Aft Starboard Battery" },
+		{ "gun_id": &"heavy_gun", "arcs": [4, 5], "label": "Fwd Port Battery" },
+		{ "gun_id": &"heavy_gun", "arcs": [4, 5], "label": "Aft Port Battery" },
+		{ "gun_id": &"medium_gun", "arcs": [2, 3, 4], "label": "Stern Gun" },
+	])
+	battleship.base_max_speed = 4
+	battleship.speed_per_engine_crew = 1     # heavy to drive: speed 4 costs 4 of 20
+	battleship.grounding_threshold = 5
+	battleship.turn_mode_by_speed.assign([1, 2, 2, 3, 4, 5])
+	_ships[battleship.id] = battleship

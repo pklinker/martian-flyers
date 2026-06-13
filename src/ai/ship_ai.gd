@@ -63,6 +63,25 @@ static func _doctrine_for(id: StringName) -> Dictionary:
 				"w_my_guns": 3.0, "w_enemy_guns": 0.5, "w_expose": 0.5,
 				"flee_buoyancy_frac": 0.20,
 			}
+		&"one_man_flyer":
+			# A pure kiter with no torpedo: hold the light gun's outer band and
+			# stay out of arc. Fast enough to dictate the range.
+			return {
+				"preferred_min": 4, "preferred_max": 7,
+				"in_band_speed_fraction": 0.75,
+				"w_too_close": 3.0, "w_too_far": 1.5,
+				"w_my_guns": 2.0, "w_enemy_guns": 2.5, "w_expose": 1.0,
+				"flee_buoyancy_frac": 0.34,
+			}
+		&"helium_battleship":
+			# The heaviest brawler: wants its broadside on the target and shrugs
+			# off return fire even harder than the cruiser.
+			return {
+				"preferred_min": 1, "preferred_max": 6,
+				"w_too_close": 0.4, "w_too_far": 2.0,
+				"w_my_guns": 3.5, "w_enemy_guns": 0.4, "w_expose": 0.5,
+				"flee_buoyancy_frac": 0.15,
+			}
 		_:
 			return {
 				"preferred_min": 2, "preferred_max": 6,
@@ -84,6 +103,11 @@ func allocate(engine: TurnEngine, s: ShipState) -> void:
 	var pool := s.crew_pool()
 	var eng: int = mini(s.engine_crew_for_speed(want), pool)
 	var left := pool - eng
+	# Hold back a hand per active fire before manning guns — a spreading fire is
+	# a worse threat than one more gun this turn. Returned to the gun budget's
+	# leftover (it all becomes damage_control) so no crew is wasted.
+	var dc_reserve: int = mini(s.fires, left)
+	left -= dc_reserve
 	var picks: Array[int] = []
 	# Priority 1: a torpedo tube that could loose this turn (enemy within reach,
 	# rack not empty) earns crew before the deck guns — it's the main punch.
@@ -108,7 +132,7 @@ func allocate(engine: TurnEngine, s: ShipState) -> void:
 		if left >= gun.crew_required:
 			picks.append(i)
 			left -= gun.crew_required
-	s.apply_allocation({ "guns": picks, "engine": eng, "damage_control": left })
+	s.apply_allocation({ "guns": picks, "engine": eng, "damage_control": left + dc_reserve })
 
 
 ## PLOT: step speed toward the doctrine target, bounded by acceleration and the

@@ -252,6 +252,7 @@ func _new_game() -> void:
 	ai = ShipAI.for_ship(engine.ships[AI].def)
 	engine.shot_resolved.connect(_on_shot)
 	engine.damage_control_repaired.connect(_on_repair)
+	engine.fire_changed.connect(_on_fire)
 	engine.game_over.connect(_on_game_over)
 	map.set_engine(engine)
 	map.clear_highlights()
@@ -654,6 +655,12 @@ func _refresh_panels() -> void:
 func _on_repair(ship: ShipState, tanks_remaining: int) -> void:
 	log_box.append_text("%s: damage control patches a buoyancy tank (%d aloft, falls at %d)\n" % [
 			ship.def.display_name, tanks_remaining, ship.def.grounding_threshold])
+	_refresh_panels()
+
+
+func _on_fire(ship: ShipState, fires: int, note: String) -> void:
+	log_box.append_text("%s: %s (%d burning)\n" % [ship.def.display_name, note, fires])
+	_refresh_panels()
 
 
 func _on_shot(r: Dictionary) -> void:
