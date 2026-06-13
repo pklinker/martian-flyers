@@ -1259,8 +1259,10 @@ func _test_officer_casualties() -> void:
 	_check(n0 > 0, "the cruiser starts with a named officer roster")
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 1
+	var crew0 := ship.crew_pool()
 	var rep := DamageResolver._hit_system(ship, ShipDef.SystemType.BRIDGE, rng, -1)
 	_check_eq(ship.officers.size(), n0 - 1, "a bridge hit removes one officer from the roster")
+	_check_eq(ship.crew_pool(), crew0 - 1, "a struck-down officer also docks the crew pool")
 	_check("struck down" in str(rep["effect"]), "the bridge-hit effect names the fallen officer")
 
 	# A crew crit on a 6 claims an officer; the effect names them.

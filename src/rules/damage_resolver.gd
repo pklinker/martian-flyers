@@ -228,8 +228,14 @@ static func _hit_system(target: ShipState, t: ShipDef.SystemType,
 					effect = "%s falls among the crew" % who
 		ShipDef.SystemType.BRIDGE:
 			# The command deck: a hit there strikes down an officer by name.
+			# The fallen officer is also a hand lost — dock the crew pool so the
+			# casualty shows up in next turn's allocation (the bridge box itself
+			# was already marked off above).
 			var who := target.pop_officer()
 			if who != "":
+				if target.sys(ShipDef.SystemType.CREW) > 0:
+					target.systems_remaining[ShipDef.SystemType.CREW] = \
+							target.sys(ShipDef.SystemType.CREW) - 1
 				effect = "%s is struck down — command shaken" % who
 			elif target.sys(t) == 0:
 				effect = "bridge destroyed — command crippled"
