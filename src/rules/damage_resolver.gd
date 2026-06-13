@@ -33,7 +33,10 @@ const MAX_FIRES := 4           # a flyer can only burn in so many places at once
 ## { "hit": bool, "roll": int, "needed": int, "range": int,
 ##   "facing_struck": int, "damage": int, "armor_absorbed": int,
 ##   "internals": Array[Dictionary], "destroyed_target": bool,
-##   "los_blocked": bool, "dust_penalty": int }
+##   "los_blocked": bool, "dust_penalty": int,
+##   "firer_hex": Vector2i, "target_hex": Vector2i }
+## The two hexes are positional metadata for the UI (tracer endpoints, hit
+## flashes); the rules never read them back.
 ## Pass `terrain` (from TurnEngine.terrain) for LOS and dust accounting.
 static func resolve_shot(firer: ShipState, mount_index: int, target: ShipState,
 		rng: RandomNumberGenerator, terrain: Dictionary = {}) -> Dictionary:
@@ -48,6 +51,7 @@ static func resolve_shot(firer: ShipState, mount_index: int, target: ShipState,
 		"facing_struck": -1, "damage": 0, "armor_absorbed": 0,
 		"internals": [], "destroyed_target": false,
 		"los_blocked": false, "dust_penalty": 0,
+		"firer_hex": firer.hex, "target_hex": target.hex,
 	}
 
 	var bracket := gun.bracket_for_range(range_hexes)
@@ -123,6 +127,7 @@ static func apply_fire_damage(target: ShipState, rng: RandomNumberGenerator) -> 
 		"facing_struck": -1, "damage": 1, "armor_absorbed": 0,
 		"internals": [], "destroyed_target": false,
 		"los_blocked": false, "dust_penalty": 0,
+		"firer_hex": target.hex, "target_hex": target.hex,
 	}
 	if not target.is_destroyed:
 		report["internals"].append(_roll_internal(target, rng, -1, false))

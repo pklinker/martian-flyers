@@ -135,22 +135,29 @@ now so tiles are ready the day the rules land. GDD terrain set: **hills**
 ## 5. SSD ship silhouettes (Phase D "art pass" — already on the roadmap)
 
 The SSD panel (`ssd_panel.gd`) draws armor/system boxes on parchment; a real
-SFB sheet has the ship's profile behind the boxes.
+SFB sheet has the ship's silhouette behind the boxes. **Shipped:** a faint
+top-down hull is now drawn behind the armor grid (vector fallback in
+`_draw_topdown_hull`), so the spatial armor boxes sit on the matching facing —
+bow boxes on the nose, port/starboard down the flanks, stern on the tail. An
+authored texture overrides the drawn hull when present.
 
-**Authoring contract:**
-- **Side profile**, facing RIGHT (bow right — matches "bow at top" spatial
-  layout convention being read top-to-bottom as front-to-back).
+**Authoring contract (updated — this is a TOP-DOWN plan view now, not a side
+profile, so it aligns with the bow-top/stern-bottom armor layout):**
+- **Top-down**, **nose pointing UP** (facing 0 = bow at top), centered on the
+  hull centerline. This is the same orientation as the map token (§3), so the
+  SSD silhouette can reuse the pristine frame of `<id>_sheet.png` if you like.
 - Pure line art, single ink color `#211C17`, no fill or very light wash —
-  it sits *behind* boxes at ~12–18% opacity, so it must work as a watermark.
-- Canvas **1024×384**, transparent.
+  it sits *behind* boxes at ~13% opacity, so it must work as a watermark.
+- Canvas **512×768** (taller than wide — a hull is longer than its beam),
+  transparent. The view scales it into the armor band, ~2× as tall as wide.
 
 | File | Subject |
 |---|---|
-| `scout_profile.png` | Helium Scout Flyer, side view |
-| `cruiser_profile.png` | Zodangan Patrol Cruiser, side view |
+| `scout_profile.png` | Helium Scout Flyer, top-down |
+| `cruiser_profile.png` | Zodangan Patrol Cruiser, top-down |
 
-These same profiles get reused on the main menu and victory/defeat modal, so
-they're worth the most care of anything in this plan.
+(Loader checks `assets/ships/<id>_profile.{png,svg}`. The main menu and
+victory/defeat modal can reuse these.)
 
 ## 6. UI dressing
 

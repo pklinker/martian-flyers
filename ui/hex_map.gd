@@ -29,11 +29,24 @@ const ACTIVE_RING := Color(0.95, 0.75, 0.15)
 const SIDE_COLORS: Array[Color] = [Color(0.16, 0.32, 0.62), Color(0.62, 0.16, 0.13)]
 const WRECK := Color(0.35, 0.32, 0.30)
 
+const TRACER := Color(0.95, 0.85, 0.45)        # radium shell streak
+const TORPEDO_TRACER := Color(0.55, 0.85, 0.95) # cooler, for the AP fish
+const FLASH_HIT := Color(0.95, 0.55, 0.15)      # shell strike burst
+const FLASH_BOOM := Color(0.95, 0.30, 0.12)     # destruction / magazine blast
+
 var engine: TurnEngine
 var highlight_moves: Array[Dictionary] = []
 var active_ship: ShipState
 
 var _origin := Vector2.ZERO
+
+## Transient combat effects: short-lived tracers (firer->target streaks) and
+## flashes (bursts at a hex). Pure presentation — they animate on _process and
+## fade out, then stop processing. Driven by map_demo from shot_resolved.
+## tracer:  { "from": Vector2i, "to": Vector2i, "torpedo": bool, "t": float, "life": float }
+## flash:   { "hex": Vector2i, "big": bool, "t": float, "life": float }
+var _tracers: Array[Dictionary] = []
+var _flashes: Array[Dictionary] = []
 
 
 func set_engine(e: TurnEngine) -> void:
@@ -101,6 +114,49 @@ func contains(hex: Vector2i) -> bool:
 func _ready() -> void:
 	clip_contents = true                  # keep the scrolling field inside the map rect
 	resized.connect(queue_redraw)
+	set_process(false)                    # only tick while effects are alive
+
+
+# ---------------------------------------------------------------------------
+# Combat effects (transient, presentation-only)
+# ---------------------------------------------------------------------------
+
+const TRACER_LIFE := 0.45
+const FLASH_LIFE := 0.55
+
+## A shell/torpedo streak from firer to target that fades over TRACER_LIFE.
+func add_tracer(from_hex: Vector2i, to_hex: Vector2i, torpedo: bool) -> void:
+	_tracers.append({ "from": from_hex, "to": to_hex, "torpedo": torpedo,
+			"t": 0.0, "life": TRACER_LIFE })
+	set_process(true)
+	queue_redraw()
+
+## A burst at a hex — a hit spark, or a bigger blast on destruction.
+func add_flash(hex: Vector2i, big: bool) -> void:
+	_flashes.append({ "hex": hex, "big": big, "t": 0.0, "life": FLASH_LIFE })
+	set_process(true)
+	queue_redraw()
+
+func clear_effects() -> void:
+	_tracers.clear()
+	_flashes.clear()
+	set_process(false)
+
+func _process(delta: float) -> void:
+	var alive := false
+	for fx in _tracers:
+		fx["t"] += delta
+		if fx["t"] < fx["life"]:
+			alive = true
+	for fx in _flashes:
+		fx["t"] += delta
+		if fx["t"] < fx["life"]:
+			alive = true
+	_tracers = _tracers.filter(func(f: Dictionary) -> bool: return f["t"] < f["life"])
+	_flashes = _flashes.filter(func(f: Dictionary) -> bool: return f["t"] < f["life"])
+	if not alive:
+		set_process(false)
+	queue_redraw()
 
 
 ## Follow camera: each draw, frame the live ships. Hold a comfortable default
@@ -214,6 +270,39 @@ func _draw() -> void:
 	# Ships
 	for s in engine.ships:
 		_draw_ship(font, s)
+
+	# Combat effects, on top of everything (streaks and bursts in the air).
+	_draw_effects()
+
+
+## Tracers as fading lines (a small leading bolt at the head); flashes as
+## expanding, fading rings with a filled core. All eased on their normalized
+## lifetime so they read as quick muzzle work, not lingering decals.
+func _draw_effects() -> void:
+	for fx in _tracers:
+		var k: float = clampf(fx["t"] / fx["life"], 0.0, 1.0)
+		var a := hex_to_pixel(fx["from"])
+		var b := hex_to_pixel(fx["to"])
+		var col: Color = TORPEDO_TRACER if fx["torpedo"] else TRACER
+		col.a = 1.0 - k
+		var w: float = (3.0 if fx["torpedo"] else 2.0) * hex_size / DEFAULT_HEX
+		draw_line(a, b, col, maxf(w, 1.0))
+		# A bright bolt travelling along the streak for the first half of its life.
+		var head := a.lerp(b, minf(k * 2.0, 1.0))
+		draw_circle(head, maxf(w * 1.4, 2.0), Color(1, 1, 1, (1.0 - k) * 0.9))
+	for fx in _flashes:
+		var k: float = clampf(fx["t"] / fx["life"], 0.0, 1.0)
+		var c := hex_to_pixel(fx["hex"])
+		var base: float = (0.95 if fx["big"] else 0.55) * hex_size
+		var col: Color = FLASH_BOOM if fx["big"] else FLASH_HIT
+		# Expanding ring.
+		var ring := col
+		ring.a = (1.0 - k) * 0.9
+		draw_arc(c, base * (0.3 + k * 0.9), 0.0, TAU, 28, ring, maxf(3.0 * hex_size / DEFAULT_HEX, 1.5))
+		# Bright core that shrinks as the ring grows.
+		var core := col
+		core.a = (1.0 - k)
+		draw_circle(c, base * 0.4 * (1.0 - k), core)
 
 
 func _draw_ship(font: Font, s: ShipState) -> void:

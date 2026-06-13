@@ -13,7 +13,7 @@ config_version=5
 config/name="Martian Flyers"
 run/main_scene="res://ui/main_menu.tscn"
 config/features=PackedStringArray("4.6", "Forward Plus")
-config/icon="res://icon.svg"
+config/icon="res://assets/ui/app_icon.svg"
 
 [display]
 

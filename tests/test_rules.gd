@@ -394,6 +394,12 @@ func _test_armor_absorption() -> void:
 	_check(target.armor_remaining[3] >= 0, "armor never goes negative")
 	# Other facings untouched.
 	_check_eq(target.armor_remaining[0], 5, "unstruck facings keep full armor")
+	# A full resolve_shot report carries the firer/target hexes (UI tracer
+	# endpoints — positional metadata, not read back by the rules).
+	firer.gun_states[0]["manned"] = true
+	var sr := DamageResolver.resolve_shot(firer, 0, target, rng, {})
+	_check_eq(sr["firer_hex"], firer.hex, "shot report carries the firer hex")
+	_check_eq(sr["target_hex"], target.hex, "shot report carries the target hex")
 
 func _test_dac_determinism() -> void:
 	# Same seed, same ship state => identical internal damage sequence.

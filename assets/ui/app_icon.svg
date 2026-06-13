@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- Ink-and-parchment app icon: a Helium flyer over a hex on sea-bottom ochre.
+       Palette matches ART_PLAN.md (SEA_BOTTOM #DECCA8, INK #211C17, Helium #29529E). -->
+  <rect x="4" y="4" width="248" height="248" rx="30" fill="#DECCA8" stroke="#211C17" stroke-width="7"/>
+  <!-- Faint tactical hex -->
+  <polygon points="214,132 171,206.5 85,206.5 42,132 85,57.5 171,57.5"
+           fill="none" stroke="#211C17" stroke-width="4" opacity="0.30"/>
+  <!-- Flyer hull, side profile, bow right -->
+  <g stroke="#211C17" stroke-width="5" stroke-linejoin="round" stroke-linecap="round">
+    <!-- aft propeller -->
+    <circle cx="54" cy="131" r="19" fill="none"/>
+    <line x1="54" y1="112" x2="54" y2="150"/>
+    <line x1="37" y1="122" x2="71" y2="140"/>
+    <line x1="37" y1="140" x2="71" y2="122"/>
+    <line x1="73" y1="131" x2="92" y2="131"/>
+    <!-- buoyancy hull -->
+    <polygon points="86,128 152,108 208,132 152,154 104,162 86,142" fill="#29529E"/>
+    <!-- deck rail -->
+    <line x1="92" y1="120" x2="152" y2="108"/>
+    <!-- gun masts -->
+    <line x1="108" y1="116" x2="108" y2="92"/>
+    <circle cx="108" cy="90" r="4" fill="#211C17"/>
+    <line x1="140" y1="112" x2="140" y2="88"/>
+    <circle cx="140" cy="86" r="4" fill="#211C17"/>
+  </g>
+</svg>

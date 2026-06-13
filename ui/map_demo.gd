@@ -18,6 +18,7 @@ const SAVE_PATH := "user://quicksave.flyersave"
 var engine: TurnEngine
 var ai: ShipAI
 var map: HexMapView
+var sound: SoundBank
 var panels: Array[SSDPanel] = []
 var log_box: RichTextLabel
 var phase_label: Label
@@ -116,6 +117,9 @@ func _build_ui() -> void:
 	map.move_clicked.connect(_on_move_clicked)
 	map.map_pressed.connect(_on_map_pressed)
 	root.add_child(map)
+
+	sound = SoundBank.new()
+	add_child(sound)
 
 	log_box = RichTextLabel.new()
 	log_box.custom_minimum_size = Vector2(0, 120)
@@ -273,6 +277,7 @@ func _bind_engine(e: TurnEngine) -> void:
 	engine.game_over.connect(_on_game_over)
 	map.set_engine(engine)
 	map.clear_highlights()
+	map.clear_effects()
 	for i in 2:
 		panels[i].set_ship(engine.ships[i])
 
@@ -713,6 +718,7 @@ func _on_fire(ship: ShipState, fires: int, note: String) -> void:
 
 
 func _on_shot(r: Dictionary) -> void:
+	_play_shot_effects(r)
 	if r.get("los_blocked", false):
 		log_box.append_text("%s %s: LOS blocked at range %d\n" % [
 				r["firer"], r["gun"], r["range"]])
@@ -731,6 +737,23 @@ func _on_shot(r: Dictionary) -> void:
 		log_box.append_text("    > %s: %s\n" % [hit["system"], hit["effect"]])
 
 
+## Map tracers, hit flashes, and SFX for one resolved shot (or an internal-fire
+## burn, which has no firer hex — just a small flash, no tracer/report sound).
+func _play_shot_effects(r: Dictionary) -> void:
+	var from: Vector2i = r.get("firer_hex", Vector2i.ZERO)
+	var to: Vector2i = r.get("target_hex", Vector2i.ZERO)
+	var is_fire_burn: bool = r.get("fire", false)
+	if r.get("los_blocked", false):
+		return
+	if not is_fire_burn:
+		map.add_tracer(from, to, r.get("is_torpedo", false))
+		sound.play("fire", -4.0)
+	if r.get("hit", false):
+		var killed: bool = r.get("destroyed_target", false)
+		map.add_flash(to, killed)
+		sound.play("explosion" if killed else "hit", -2.0 if killed else -6.0)
+
+
 func _on_game_over(side: int, reason: String) -> void:
 	phase = DemoPhase.OVER
 	_show_bar(DemoPhase.OVER)
@@ -738,6 +761,10 @@ func _on_game_over(side: int, reason: String) -> void:
 
 	var winner := engine.ships[side]
 	var loser  := engine.ships[1 - side]
+	# A final burst over the stricken flyer — the only map effect for a grounding
+	# (a destruction already flashed via _on_shot), and a fitting full stop.
+	map.add_flash(loser.hex, true)
+	sound.play("explosion")
 	var flavor := "settled on the dead sea bottom" if loser.grounded \
 			else "consumed in radium fire"
 	var player_won := side == PLAYER
