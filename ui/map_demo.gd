@@ -11,6 +11,10 @@ enum DemoPhase { ALLOCATE, PLOT, MOVE, FIRE, OVER }
 const PLAYER := 0
 const AI := 1
 
+## Single quicksave slot. user:// keeps it in the per-user data dir, off in the
+## project tree, so it survives reinstalls of the game build but not the player.
+const SAVE_PATH := "user://quicksave.flyersave"
+
 var engine: TurnEngine
 var ai: ShipAI
 var map: HexMapView
@@ -81,6 +85,8 @@ func _build_ui() -> void:
 	phase_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	top.add_child(phase_label)
 	ssd_toggle_btn = _add_button(top, "Hide Ships", _toggle_ssd)
+	_add_button(top, "Save", _on_save)
+	_add_button(top, "Load", _on_load)
 	_add_button(top, "New Game", _new_game)
 	_add_button(top, "Menu", _on_quit_to_menu)
 
@@ -244,11 +250,22 @@ func _show_bar(ph: DemoPhase) -> void:
 # ---------------------------------------------------------------------------
 
 func _new_game() -> void:
+	var e := TurnEngine.new()
+	e.setup(int(Time.get_unix_time_from_system()))
+	_bind_engine(e)
+	_alloc_initialized = false
+	log_box.clear()
+	log_box.append_text("Engagement over the dead sea bottom. You fly the Scout (blue).\n")
+	_enter_allocate()
+
+
+## Adopt `e` as the live engine: wire its signals, build an AI for the enemy
+## hull, point the map and SSD panels at it. Shared by new-game and load — a
+## fresh TurnEngine object each time, so no signal is ever double-connected.
+func _bind_engine(e: TurnEngine) -> void:
 	if game_over_overlay != null:
 		game_over_overlay.visible = false
-	engine = TurnEngine.new()
-	engine.setup(int(Time.get_unix_time_from_system()))
-	_alloc_initialized = false
+	engine = e
 	ai = ShipAI.for_ship(engine.ships[AI].def)
 	engine.shot_resolved.connect(_on_shot)
 	engine.damage_control_repaired.connect(_on_repair)
@@ -258,8 +275,40 @@ func _new_game() -> void:
 	map.clear_highlights()
 	for i in 2:
 		panels[i].set_ship(engine.ships[i])
-	log_box.clear()
-	log_box.append_text("Engagement over the dead sea bottom. You fly the Scout (blue).\n")
+
+
+# --- Save / load -----------------------------------------------------------
+
+func _on_save() -> void:
+	if engine == null:
+		return
+	var err := SaveGame.save_to_file(engine, SAVE_PATH)
+	if err == OK:
+		log_box.append_text("[Saved — turn %d]\n" % engine.turn_number)
+	else:
+		log_box.append_text("[Save failed: error %d]\n" % err)
+
+
+## Restore the saved engine and resume at the start of that turn's allocation.
+## A save can be taken at any point in a turn; on load we re-open ALLOCATE (the
+## clean per-turn entry point) with the saved crew plan carried forward, rather
+## than trying to splice back into a half-finished movement or fire step.
+func _on_load() -> void:
+	var loaded := SaveGame.load_from_file(SAVE_PATH)
+	if loaded == null:
+		log_box.append_text("[No save to load]\n")
+		return
+	_bind_engine(loaded)
+	# Seed the allocation UI from the restored ship's own plan and preserve it
+	# (treat it like a carried-forward turn, not a fresh prefill).
+	var pa := engine.ships[PLAYER].allocation
+	engine_value = int(pa.get("engine", 0))
+	dc_value = int(pa.get("damage_control", 0))
+	lookout_value = int(pa.get("lookout", 0))
+	alloc = { "guns": (pa.get("guns", []) as Array).duplicate(),
+			"damage_control": dc_value, "lookout": lookout_value }
+	_alloc_initialized = true
+	log_box.append_text("[Loaded — turn %d]\n" % engine.turn_number)
 	_enter_allocate()
 
 

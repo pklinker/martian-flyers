@@ -59,6 +59,7 @@ Key structural decisions already in force:
 | `ship_state.gd` | Runtime state: position/facing/speed, armor remaining per facing, system boxes remaining, gun mount states (destroyed/reload/manned), crew allocation, derived-capability functions: `effective_max_speed()` / `usable_max_speed()` (engine-crew gated) / `engine_crew_for_speed()`, `guns_bearing()`, `fire_preview()` (per-mount shot preview with reason when it can't fire), `apply_allocation()`, `tick_reloads()`, `enforce_buoyancy()` (grounds the ship at/below the falling line); per-mount **torpedo ammo** in `gun_states[i]["ammo"]` (-1 = a gun's infinite supply), gating empty tubes in `gun_ready`/`fire_preview`; **critical state** (`fires`, `steering_jammed` — gates `can_turn()`, `officers` roster + `pop_officer()`) | Done, tested |
 | `damage_resolver.gd` | Gunnery: to-hit roll per range bracket, armor absorption on struck facing (never repairs, never negative), **armour-piercing bypass for torpedoes** (AP points punch through plating without marking it off), overflow rolls on the weighted DAC, magazine explosion (5+ on d6 per magazine hit), hulk rule, reload start, **torpedo ammo consumed on launch**, **secondary criticals** (engine/magazine fire on 6, rudder jam on 5+, named officer struck on bridge/crew hits) + `apply_fire_damage` (a fire's per-upkeep burn, no chain-ignite). Static, RNG injected | Done, tested |
 | `ship_library.gd` | Concrete v1 data built in code (static vars + lazy build): light/medium/heavy radium guns, **aerial radium torpedo** (3-shot, AP 3, dmg 6/6/5 to range 11, 3-turn reload), four ship classes — Helium Scout Flyer (bow torpedo tube), Zodangan Patrol Cruiser, **One-Man Flyer** (fast, eggshell, one light gun), **Helium Battleship** (five-heavy broadside, deep crew) — each with an officer roster. Migration path to `.tres` noted | Done, tested |
+| `save_game.gd` | `SaveGame` — the engine's persistence layer. Serializes a `TurnEngine` (every `ShipState`, RNG seed+state, turn/phase, terrain, in-flight movement/fire queues as ship indices) to a Dictionary / string / file and restores it; `ShipDef` rebuilt from `ShipLibrary` by id, never serialized. `var_to_str` wire format (round-trips `Vector2i`/int-keyed dicts), `SAVE_VERSION` guard rejects corrupt input. Pure, no rendering/input | Done, tested |
 | `turn_engine.gd` | Phase enum (ALLOCATION/PLOT/MOVEMENT/FIRE/UPKEEP/GAME_OVER), 8-impulse chart (`moves_on_impulse`: SFB fractional distribution), engine-owned movement sequencer (`begin_movement`/`next_mover`, emits `impulse_advanced`), playfield bounds rule (`map_cols`/`map_rows`/`map_contains`), `legal_moves(ship, blocked)` with collision blocking + `legal_moves_for(ship)` (collision **and** bounds filtered), turn-mode enforcement via `straight_moved`, fire queue, upkeep (reloads, **steering-jam tick**, then damage control — **fires first** (douse at 4+) then buoyancy patch at 5+ (emits `damage_control_repaired`), then **fires burn** via the DAC and may spread (emits `fire_changed`), **then** the falling-line grounding check so a flyer on the line can claw back), victory check (destroyed OR grounded) | Done, tested |
 
 ### ai/
@@ -71,7 +72,7 @@ Key structural decisions already in force:
 
 | File | Contents | State |
 |---|---|---|
-| `test_rules.gd` | `extends SceneTree` headless runner, 115 assertions across: hex math, impulse chart, turn mode + collision blocking, **map bounds (engine rule prunes off-field moves), impulse sequencer (`begin_movement`/`next_mover` cadence + `impulse_advanced` emission)**, range brackets, arcs, `guns_bearing_from`, `fire_preview` (bears/reasons/to-hit), engine-crew speed gate (`usable_max_speed`), reload/crew allocation, armor absorption, DAC determinism, magazine explosion, **torpedoes (armour-piercing bypass + plate not marked off; finite-ammo depletion, empty-tube gating, "no torpedoes" preview, deck guns unaffected)**, buoyancy grounding at the falling line, **DC repair feedback (`damage_control_repaired` fires per tank) + claw-back ordering (DC patches before the grounding check)**, capability erosion, **criticals (steering jam gates `can_turn`/legal moves + upkeep tick-down; fire ignition/burn/spread/douse; named officer casualties from bridge & crew hits), new ship classes (one-man flyer + battleship invariants and seeded AI battles)**, **AI evaluator doctrine preferences (incl. armour awareness: presses a stripped enemy facing, hides own holes, hoards AP torpedoes for hard armour) + a 5-seed ShipAI-vs-ShipAI battle (decisive, no deadlock, invariants)**, and a full greedy smoke battle. Exit code 0/1 | Done, **201/201 passing** on Godot 4.6.3 |
+| `test_rules.gd` | `extends SceneTree` headless runner, 115 assertions across: hex math, impulse chart, turn mode + collision blocking, **map bounds (engine rule prunes off-field moves), impulse sequencer (`begin_movement`/`next_mover` cadence + `impulse_advanced` emission)**, range brackets, arcs, `guns_bearing_from`, `fire_preview` (bears/reasons/to-hit), engine-crew speed gate (`usable_max_speed`), reload/crew allocation, armor absorption, DAC determinism, magazine explosion, **torpedoes (armour-piercing bypass + plate not marked off; finite-ammo depletion, empty-tube gating, "no torpedoes" preview, deck guns unaffected)**, buoyancy grounding at the falling line, **DC repair feedback (`damage_control_repaired` fires per tank) + claw-back ordering (DC patches before the grounding check)**, capability erosion, **criticals (steering jam gates `can_turn`/legal moves + upkeep tick-down; fire ignition/burn/spread/douse; named officer casualties from bridge & crew hits), new ship classes (one-man flyer + battleship invariants and seeded AI battles)**, **AI evaluator doctrine preferences (incl. armour awareness: presses a stripped enemy facing, hides own holes, hoards AP torpedoes for hard armour) + a 5-seed ShipAI-vs-ShipAI battle (decisive, no deadlock, invariants)**, **save/load (field-by-field engine round-trip, RNG determinism across a save boundary, file I/O, version/garbage rejection)**, and a full greedy smoke battle. Exit code 0/1 | Done, **229/229 passing** on Godot 4.6.3 |
 | `ai_scan.gd` | Dev tool (not part of the suite): runs N ShipAI-vs-ShipAI battles on the engine's own bounded field (`engine.legal_moves_for`) and prints the win split / timeouts / avg turns. `-- N` for count, `-- 1 v` to trace one. The "200-seed battle scan" the validation methodology calls for. Baseline after criticals + armour-aware AI: **scout 8% / cruiser 92%, ~0.5% timeout, avg ~10 turns** | Tool |
 
 Run: `godot --headless --path . -s res://tests/test_rules.gd`
@@ -137,15 +138,15 @@ ship directly at its per-class falling line. See GAME_DESIGN.md §2/§3.)*
 - [x] **Crew allocation UI** for the player — ALLOCATE phase in `map_demo`:
 	  per-gun manning toggles (cost shown) + **engine-room stepper** (caps this
 	  turn's top speed via `usable_max_speed`) + damage-control stepper against
-      the crew pool, live `used / pool` budget and resulting top-speed readout,
-      Confirm gated when over. Engine crew now powers speed (`speed ≤
+	  the crew pool, live `used / pool` budget and resulting top-speed readout,
+	  Confirm gated when over. Engine crew now powers speed (`speed ≤
 	  engine_crew × speed_per_engine_crew`), so the scout can't run flat-out and
 	  man every gun — the SFB power economy in crew terms.
 - [x] **Per-gun fire declaration UI** — FIRE phase: one toggle per gun that
 	  bears, captioned with `fire_preview` (range, to-hit, damage); guns that
 	  can't fire are greyed with the reason (out of arc / range / unmanned /
-      reloading). Holding a heavy keeps it off cooldown. (Target picking is
-      trivial in 1v1; revisit when multiple enemies exist.)
+	  reloading). Holding a heavy keeps it off cooldown. (Target picking is
+	  trivial in 1v1; revisit when multiple enemies exist.)
 - [x] Emit and use `TurnEngine.impulse_advanced`; movement driver moved into
 	  the engine (`begin_movement()` / `next_mover()`) so the UI, AI and tests
 	  share one impulse sequencer. The demo's loop now just executes (AI) or
@@ -303,7 +304,26 @@ ship directly at its per-class falling line. See GAME_DESIGN.md §2/§3.)*
 > shrink the board to paper over it — open sky is the intended feel.
 
 ### Phase D — polish & ship it
-- [ ] Save/load (serialize `ShipState`s + RNG state + turn/phase).
+- [x] **Save/load** — `rules/save_game.gd` (`SaveGame`, pure & headless-testable,
+	  the engine's persistence layer). Serializes a `TurnEngine` — every
+	  `ShipState` (position/facing/speed, per-facing armor, system boxes,
+	  gun-mount states incl. **torpedo ammo/reload/manned**, criticals
+	  `fires`/`steering_jammed`/`officers`, port/stbd buoyancy, this turn's
+	  `allocation`), the **RNG seed + state**, `turn_number`/`phase`, terrain,
+	  and the in-flight **movement & fire queues** (stored as indices into
+	  `ships`, restored to live references) — to a plain Dictionary, a string,
+	  or a file. Wire format is `var_to_str`/`str_to_var` (not JSON) so
+	  `Vector2i` keys, nested dicts, and the `SystemType`-keyed system map
+	  round-trip natively; the immutable `ShipDef` is **rebuilt from
+	  `ShipLibrary` by id**, never serialized (template vs. state split). A
+	  `SAVE_VERSION` guard rejects unknown/corrupt input (returns null, never
+	  crashes). `map_demo` gains top-bar **Save / Load** buttons (single
+	  `user://` quickslot); load re-binds the engine's signals and re-opens
+	  ALLOCATE with the saved crew plan carried forward. 28 assertions in
+	  `test_rules.gd` (field-by-field round-trip incl. typed-array element types,
+	  **RNG determinism** — a restored engine reproduces the next rolls and a
+	  saved fire queue resolves to identical damage, file I/O, version/garbage
+	  rejection). Suite now **229/229**.
 - [ ] Sound, hit flashes on the map, shell-tracer animation between hexes.
 - [ ] SSD art pass (ship silhouette behind the boxes, like a real SFB sheet).
 	  **See `ART_PLAN.md`** — full asset inventory with authoring specs (sizes,

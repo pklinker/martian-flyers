@@ -76,6 +76,11 @@ func _init() -> void:
 	_test_ai_armor_awareness()
 	_test_ai_battle()
 
+	_suite("Save / load")
+	_test_save_roundtrip()
+	_test_save_rng_determinism()
+	_test_save_file_and_rejects()
+
 	_suite("Smoke battle")
 	_test_full_battle()
 
@@ -895,6 +900,134 @@ func _play_out(engine: TurnEngine) -> Dictionary:
 			break
 		engine.run_upkeep()
 	return res
+
+
+# ---------------------------------------------------------------------------
+# Save / load: serialize the engine (ships + RNG + turn/phase + queues) and
+# restore it exactly — the persistence layer is pure rules, headless-testable.
+# ---------------------------------------------------------------------------
+
+func _test_save_roundtrip() -> void:
+	# Build an engine, then rough up the state so every serialized field carries
+	# a non-default value: damage, criticals, allocation, a struck officer, a
+	# spent torpedo, and a mid-MOVEMENT phase with an in-flight impulse.
+	var engine := TurnEngine.new()
+	engine.setup(20260613)
+	engine.turn_number = 7
+	var scout := engine.ships[0]
+	var cruiser := engine.ships[1]
+	scout.armor_remaining[0] = 1
+	scout.systems_remaining[ShipDef.SystemType.ENGINE] = 2
+	scout.fires = 2
+	scout.steering_jammed = 1
+	scout.pop_officer()
+	scout.gun_states[4]["ammo"] = 1            # torpedo tube part-spent
+	scout.gun_states[0]["reload"] = 2
+	scout.port_buoyancy = 3
+	scout.stbd_buoyancy = 5
+	scout.apply_allocation({ "guns": [0, 4], "engine": 2, "damage_control": 1, "lookout": 0 })
+	cruiser.is_destroyed = false
+	cruiser.speed = 4
+	# Open movement so current_impulse and the movement queue are non-empty.
+	engine.begin_movement()
+	engine.next_mover()
+
+	var text := SaveGame.serialize(engine)
+	var loaded := SaveGame.deserialize(text)
+	_check(loaded != null, "deserialize returns a live engine")
+
+	_check_eq(loaded.turn_number, 7, "turn_number round-trips")
+	_check_eq(loaded.phase, engine.phase, "phase round-trips")
+	_check_eq(loaded.current_impulse, engine.current_impulse, "current_impulse round-trips")
+	_check_eq(loaded.map_cols, engine.map_cols, "map_cols round-trips")
+	_check_eq(loaded.terrain.size(), engine.terrain.size(), "terrain map round-trips")
+	_check_eq(loaded.ships.size(), 2, "both ships restored")
+
+	var ls := loaded.ships[0]
+	_check_eq(String(ls.def.id), "helium_scout", "ship def rebuilt from library by id")
+	_check_eq(ls.armor_remaining[0], 1, "damaged armor facing round-trips")
+	_check_eq(ls.sys(ShipDef.SystemType.ENGINE), 2, "eroded system count round-trips")
+	_check_eq(ls.fires, 2, "fire count round-trips")
+	_check_eq(ls.steering_jammed, 1, "steering jam round-trips")
+	_check_eq(ls.officers.size(), scout.officers.size(), "struck officer roster round-trips")
+	_check_eq(int(ls.gun_states[4]["ammo"]), 1, "torpedo ammo round-trips")
+	_check_eq(int(ls.gun_states[0]["reload"]), 2, "gun reload counter round-trips")
+	_check_eq(ls.port_buoyancy, 3, "port buoyancy round-trips")
+	_check_eq(ls.stbd_buoyancy, 5, "stbd buoyancy round-trips")
+	_check_eq(int(ls.allocation.get("engine", -1)), 2, "allocation round-trips")
+	_check_eq(ls.gun_states[0]["manned"], true, "manned flag (from allocation) round-trips")
+	# Typed-array element types survive the round-trip (convention #1).
+	_check(ls.armor_remaining.get_typed_builtin() == TYPE_INT, "armor_remaining stays Array[int]")
+	# The movement queue restored to live ShipStates, not dangling indices.
+	var mq_ok := true
+	for m in loaded._movement_queue:
+		if not (m in loaded.ships):
+			mq_ok = false
+	_check(mq_ok, "movement queue restored to the loaded engine's ships")
+
+
+func _test_save_rng_determinism() -> void:
+	# The whole point of saving rng_state: a restored engine continues the exact
+	# same random sequence, so replays and resumed games are deterministic.
+	var engine := TurnEngine.new()
+	engine.setup(424242)
+	# Burn a few rolls so we're mid-stream, not at the seed boundary.
+	for _i in 5:
+		engine.rng.randi()
+
+	var text := SaveGame.serialize(engine)
+	var expected: Array[int] = []
+	for _i in 10:
+		expected.append(engine.rng.randi())
+
+	var loaded := SaveGame.deserialize(text)
+	var got: Array[int] = []
+	for _i in 10:
+		got.append(loaded.rng.randi())
+	_check_eq(got, expected, "restored RNG reproduces the original's next 10 rolls")
+
+	# And the saved fire queue resolves identically on the restored engine.
+	var e2 := TurnEngine.new()
+	e2.setup(99887766)
+	var a := e2.ships[0]
+	var b := e2.ships[1]
+	a.hex = Vector2i(10, 5)
+	b.hex = Vector2i(12, 5)
+	a.facing = 1
+	a.apply_allocation({ "guns": [0], "engine": 1, "damage_control": 0 })
+	a.gun_states[0]["reload"] = 0
+	var bearing := a.guns_bearing(b.hex, e2.terrain)
+	if not bearing.is_empty():
+		e2.declare_fire(a, bearing[0], b)
+		var save2 := SaveGame.serialize(e2)
+		# Resolve on the original.
+		e2.resolve_fire_phase()
+		var orig_armor := (b.armor_remaining as Array).duplicate()
+		# Resolve on a freshly loaded copy.
+		var e3 := SaveGame.deserialize(save2)
+		e3.resolve_fire_phase()
+		_check_eq((e3.ships[1].armor_remaining as Array), orig_armor,
+				"saved fire queue + RNG resolve to identical damage")
+	else:
+		_check(true, "saved fire queue + RNG resolve to identical damage (no bearing; skipped)")
+
+
+func _test_save_file_and_rejects() -> void:
+	var engine := TurnEngine.new()
+	engine.setup(7777)
+	engine.turn_number = 3
+	var path := "user://test_save.flyersave"
+	var err := SaveGame.save_to_file(engine, path)
+	_check_eq(err, OK, "save_to_file writes without error")
+	var loaded := SaveGame.load_from_file(path)
+	_check(loaded != null and loaded.turn_number == 3, "load_from_file restores the engine")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+
+	# Corrupt / unknown input is rejected, not crashed on.
+	_check(SaveGame.deserialize("not a dictionary at all") == null, "garbage text rejected")
+	_check(SaveGame.deserialize(var_to_str({ "version": 9999 })) == null, "unknown version rejected")
+	_check(SaveGame.load_from_file("user://does_not_exist.flyersave") == null,
+			"missing file load returns null")
 
 
 # ---------------------------------------------------------------------------

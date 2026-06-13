@@ -1,0 +1,195 @@
+class_name SaveGame
+extends RefCounted
+## Persistence for the rules engine: serialize a TurnEngine — its ships, the
+## RNG state, the turn/phase, terrain, and the in-flight movement/fire queues —
+## to a plain Dictionary, a string, or a file, and restore it exactly.
+##
+## A pure rules-layer concern: no rendering, no input, fully headless-testable
+## (round-trip a clone and the engine continues deterministically). The UI is a
+## client — it calls save_to_file()/load_from_file() and re-binds its signals to
+## the restored engine.
+##
+## The wire format is Godot's var_to_str()/str_to_var() (not JSON): it round-
+## trips Vector2i, nested dictionaries, and int dictionary keys natively, so the
+## per-facing armor arrays, the SystemType-keyed system counts, and the terrain
+## map all survive without hand-rolled key encoding. We never serialize the
+## ShipDef Resource or any signal — only the marked-up state, with the immutable
+## template rebuilt from ShipLibrary by id on load.
+
+## Bump when the serialized shape changes incompatibly; load rejects unknown.
+const SAVE_VERSION := 1
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+## Serialize the engine to a string suitable for a save file.
+static func serialize(engine: TurnEngine) -> String:
+	return var_to_str(engine_to_dict(engine))
+
+
+## Rebuild a TurnEngine from a string produced by serialize(). Returns null if
+## the text is malformed or the save version is unrecognised.
+static func deserialize(text: String) -> TurnEngine:
+	var data: Variant = str_to_var(text)
+	if not (data is Dictionary):
+		return null
+	return dict_to_engine(data)
+
+
+## Write a save to disk. Returns OK on success, or a non-OK Error code.
+static func save_to_file(engine: TurnEngine, path: String) -> int:
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		return FileAccess.get_open_error()
+	f.store_string(serialize(engine))
+	f.close()
+	return OK
+
+
+## Read a save from disk. Returns the restored engine, or null if the file is
+## missing or corrupt.
+static func load_from_file(path: String) -> TurnEngine:
+	if not FileAccess.file_exists(path):
+		return null
+	var f := FileAccess.open(path, FileAccess.READ)
+	if f == null:
+		return null
+	var text := f.get_as_text()
+	f.close()
+	return deserialize(text)
+
+
+# ---------------------------------------------------------------------------
+# Engine <-> Dictionary
+# ---------------------------------------------------------------------------
+
+static func engine_to_dict(engine: TurnEngine) -> Dictionary:
+	var ships_data: Array = []
+	for s in engine.ships:
+		ships_data.append(ship_to_dict(s))
+	# The in-flight queues hold ShipState references; store them as indices into
+	# the ships array so a save taken mid-MOVEMENT or mid-FIRE restores intact.
+	var fire_queue: Array = []
+	for decl in engine._fire_queue:
+		fire_queue.append({
+			"firer": engine.ships.find(decl["firer"]),
+			"mount": int(decl["mount"]),
+			"target": engine.ships.find(decl["target"]),
+		})
+	var move_queue: Array = []
+	for s in engine._movement_queue:
+		move_queue.append(engine.ships.find(s))
+	return {
+		"version": SAVE_VERSION,
+		"turn_number": engine.turn_number,
+		"phase": int(engine.phase),
+		"rng_seed": int(engine.rng.seed),
+		"rng_state": int(engine.rng.state),
+		"map_cols": engine.map_cols,
+		"map_rows": engine.map_rows,
+		"current_impulse": engine.current_impulse,
+		"terrain": engine.terrain.duplicate(),
+		"ships": ships_data,
+		"fire_queue": fire_queue,
+		"movement_queue": move_queue,
+	}
+
+
+static func dict_to_engine(data: Dictionary) -> TurnEngine:
+	if int(data.get("version", 0)) != SAVE_VERSION:
+		return null
+	var engine := TurnEngine.new()
+	engine.turn_number = int(data.get("turn_number", 1))
+	engine.phase = int(data.get("phase", TurnEngine.Phase.ALLOCATION)) as TurnEngine.Phase
+	engine.map_cols = int(data.get("map_cols", engine.map_cols))
+	engine.map_rows = int(data.get("map_rows", engine.map_rows))
+	engine.current_impulse = int(data.get("current_impulse", 0))
+	engine.rng.seed = int(data.get("rng_seed", 0))
+	engine.rng.state = int(data.get("rng_state", 0))
+	engine.terrain = (data.get("terrain", {}) as Dictionary).duplicate()
+
+	var restored: Array[ShipState] = []
+	for sd in data.get("ships", []):
+		restored.append(dict_to_ship(sd))
+	engine.ships = restored
+
+	# Rebuild the queues from indices back into the live ShipStates.
+	var fq: Array[Dictionary] = []
+	for decl in data.get("fire_queue", []):
+		var fi := int(decl["firer"])
+		var ti := int(decl["target"])
+		if fi < 0 or fi >= restored.size() or ti < 0 or ti >= restored.size():
+			continue
+		fq.append({ "firer": restored[fi], "mount": int(decl["mount"]), "target": restored[ti] })
+	engine._fire_queue = fq
+
+	var mq: Array[ShipState] = []
+	for idx in data.get("movement_queue", []):
+		var i := int(idx)
+		if i >= 0 and i < restored.size():
+			mq.append(restored[i])
+	engine._movement_queue = mq
+
+	return engine
+
+
+# ---------------------------------------------------------------------------
+# ShipState <-> Dictionary
+# ---------------------------------------------------------------------------
+
+static func ship_to_dict(s: ShipState) -> Dictionary:
+	# Gun-mount states are plain dicts of bools/ints; deep-duplicate so the save
+	# never aliases live state.
+	var guns: Array = []
+	for g in s.gun_states:
+		guns.append(g.duplicate())
+	return {
+		"def_id": String(s.def.id),
+		"side": s.side,
+		"hex": s.hex,
+		"facing": s.facing,
+		"speed": s.speed,
+		"straight_moved": s.straight_moved,
+		"armor_remaining": s.armor_remaining.duplicate(),
+		"systems_remaining": s.systems_remaining.duplicate(),
+		"grounded": s.grounded,
+		"is_destroyed": s.is_destroyed,
+		"fires": s.fires,
+		"steering_jammed": s.steering_jammed,
+		"officers": s.officers.duplicate(),
+		"gun_states": guns,
+		"port_buoyancy": s.port_buoyancy,
+		"stbd_buoyancy": s.stbd_buoyancy,
+		"allocation": s.allocation.duplicate(true),
+	}
+
+
+static func dict_to_ship(d: Dictionary) -> ShipState:
+	var s := ShipState.new()
+	# The immutable template comes back from the library by id; only the marks
+	# below are restored from the save.
+	s.def = ShipLibrary.ship(StringName(d["def_id"]))
+	s.side = int(d["side"])
+	s.hex = d["hex"]
+	s.facing = int(d["facing"])
+	s.speed = int(d["speed"])
+	s.straight_moved = int(d["straight_moved"])
+	# assign() (not =) keeps the typed Array[int] / Array[String] element type —
+	# see convention #1 in the implementation plan.
+	s.armor_remaining.assign(d["armor_remaining"])
+	s.systems_remaining = (d["systems_remaining"] as Dictionary).duplicate()
+	s.grounded = bool(d["grounded"])
+	s.is_destroyed = bool(d["is_destroyed"])
+	s.fires = int(d["fires"])
+	s.steering_jammed = int(d["steering_jammed"])
+	s.officers.assign(d["officers"])
+	var guns: Array[Dictionary] = []
+	for g in d["gun_states"]:
+		guns.append((g as Dictionary).duplicate())
+	s.gun_states = guns
+	s.port_buoyancy = int(d["port_buoyancy"])
+	s.stbd_buoyancy = int(d["stbd_buoyancy"])
+	s.allocation = (d["allocation"] as Dictionary).duplicate(true)
+	return s
