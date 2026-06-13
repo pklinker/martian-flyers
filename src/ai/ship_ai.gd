@@ -9,8 +9,10 @@ extends RefCounted
 ##   - plots speed toward its preferred range band,
 ##   - per movement impulse, picks the legal move that maximises a weighted
 ##     utility (range-band fit, own guns bearing, enemy guns denied, weak-facing
-##     protection), and
-##   - fires every gun that bears.
+##     protection, plus armour awareness: aim at the enemy's thinnest/breached
+##     facing, and never present an already-holed facing of its own), and
+##   - fires every deck gun that bears (chipping armour is never wasted) and
+##     spends a finite torpedo only on good odds against hard armour.
 ##
 ## Doctrine is a weight table (see `_doctrine_for`). Difficulty is expressed as
 ## those weights plus optional score noise — deeper lookahead is a future lever.
@@ -25,6 +27,10 @@ const TORPEDO_MAX_TO_HIT := 4
 ## Start manning a tube once the enemy is within this margin of its reach, so
 ## it's loaded and ready as the scout closes rather than a turn late.
 const TORPEDO_ARM_MARGIN := 2
+## Don't spend an armour-piercing torpedo on a facing softer than this when a
+## deck gun also bears — guns crack soft plating for free; save the fish for
+## armour they can't get through.
+const TORPEDO_HARD_ARMOR := 3
 
 
 static func for_ship(def: ShipDef) -> ShipAI:
@@ -54,6 +60,7 @@ static func _doctrine_for(id: StringName) -> Dictionary:
 				"in_band_speed_fraction": 0.75,
 				"w_too_close": 3.0, "w_too_far": 1.5,
 				"w_my_guns": 2.0, "w_enemy_guns": 2.5, "w_expose": 1.0,
+				"w_penetrate": 1.0, "w_hole": 1.5,
 				"flee_buoyancy_frac": 0.34,
 			}
 		&"zodanga_cruiser":
@@ -61,6 +68,7 @@ static func _doctrine_for(id: StringName) -> Dictionary:
 				"preferred_min": 1, "preferred_max": 4,
 				"w_too_close": 0.5, "w_too_far": 2.0,
 				"w_my_guns": 3.0, "w_enemy_guns": 0.5, "w_expose": 0.5,
+				"w_penetrate": 1.5, "w_hole": 1.0,
 				"flee_buoyancy_frac": 0.20,
 			}
 		&"one_man_flyer":
@@ -71,6 +79,7 @@ static func _doctrine_for(id: StringName) -> Dictionary:
 				"in_band_speed_fraction": 0.75,
 				"w_too_close": 3.0, "w_too_far": 1.5,
 				"w_my_guns": 2.0, "w_enemy_guns": 2.5, "w_expose": 1.0,
+				"w_penetrate": 1.0, "w_hole": 1.5,
 				"flee_buoyancy_frac": 0.34,
 			}
 		&"helium_battleship":
@@ -80,6 +89,7 @@ static func _doctrine_for(id: StringName) -> Dictionary:
 				"preferred_min": 1, "preferred_max": 6,
 				"w_too_close": 0.4, "w_too_far": 2.0,
 				"w_my_guns": 3.5, "w_enemy_guns": 0.4, "w_expose": 0.5,
+				"w_penetrate": 1.5, "w_hole": 1.0,
 				"flee_buoyancy_frac": 0.15,
 			}
 		_:
@@ -87,6 +97,7 @@ static func _doctrine_for(id: StringName) -> Dictionary:
 				"preferred_min": 2, "preferred_max": 6,
 				"w_too_close": 1.0, "w_too_far": 1.0,
 				"w_my_guns": 2.0, "w_enemy_guns": 1.0, "w_expose": 0.5,
+				"w_penetrate": 1.0, "w_hole": 1.0,
 				"flee_buoyancy_frac": 0.25,
 			}
 
@@ -163,15 +174,27 @@ func choose_move(engine: TurnEngine, s: ShipState, moves: Array[Dictionary]) -> 
 	return best
 
 
-## FIRE: shoot every gun that bears (LOS-checked); loose a torpedo only on
-## worthwhile odds so the finite salvo isn't squandered on a long-range prayer.
+## FIRE: shoot every deck gun that bears (LOS-checked) — even a fully-absorbed
+## shot strips armour toward the next penetration, so guns are never wasted. A
+## finite torpedo is spent only on worthwhile odds AND only against hard armour:
+## once the struck facing is breached, ordinary guns exploit the hole for free,
+## so the armour-piercing salvo is hoarded for plating the guns can't crack.
 func choose_fire(s: ShipState, enemy: ShipState, terrain: Dictionary = {}) -> Array[int]:
+	var bearing := s.guns_bearing(enemy.hex, terrain)
+	var has_deck_gun := false
+	for i in bearing:
+		if not ShipLibrary.gun(s.def.gun_mounts[i]["gun_id"]).is_torpedo:
+			has_deck_gun = true
+			break
 	var out: Array[int] = []
-	for i in s.guns_bearing(enemy.hex, terrain):
+	for i in bearing:
 		var gun: GunDef = ShipLibrary.gun(s.def.gun_mounts[i]["gun_id"])
-		if gun.is_torpedo \
-				and int(s.fire_preview(i, enemy.hex, terrain)["to_hit"]) > TORPEDO_MAX_TO_HIT:
-			continue
+		if gun.is_torpedo:
+			if int(s.fire_preview(i, enemy.hex, terrain)["to_hit"]) > TORPEDO_MAX_TO_HIT:
+				continue   # salvo discipline: not on a long-range prayer
+			var hit := HexMath.struck_facing(enemy.hex, enemy.facing, s.hex)
+			if has_deck_gun and enemy.armor_remaining[hit] < TORPEDO_HARD_ARMOR:
+				continue   # the facing is soft — let the deck guns do it, save the fish
 		out.append(i)
 	return out
 
@@ -235,6 +258,17 @@ func _eval_position(s: ShipState, my_hex: Vector2i, my_facing: int, enemy: ShipS
 	var struck := HexMath.struck_facing(my_hex, my_facing, enemy.hex)
 	var best_armor: int = s.armor_remaining.max()
 	score -= float(best_armor - s.armor_remaining[struck]) * float(doctrine["w_expose"])
+	# A fully holed facing is free internals for the enemy — refuse to present it.
+	if s.armor_remaining[struck] == 0:
+		score -= float(doctrine.get("w_hole", 0.0))
+
+	# Offense: internal damage only flows once a facing is stripped, so prefer to
+	# strike the enemy's thinnest (or already-breached) facing and keep pounding
+	# the same one until it caves — rather than circling onto fresh plating.
+	if mine > 0:
+		var enemy_hit := HexMath.struck_facing(enemy.hex, enemy.facing, my_hex)
+		score += float(enemy.def.armor.max() - enemy.armor_remaining[enemy_hit]) \
+				* float(doctrine.get("w_penetrate", 0.0))
 	return score
 
 

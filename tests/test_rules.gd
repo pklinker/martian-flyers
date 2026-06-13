@@ -73,6 +73,7 @@ func _init() -> void:
 
 	_suite("AI")
 	_test_ai_evaluator()
+	_test_ai_armor_awareness()
 	_test_ai_battle()
 
 	_suite("Smoke battle")
@@ -774,6 +775,56 @@ func scout_at(scout: ShipState, h: Vector2i) -> ShipState:
 	scout.hex = h
 	scout.facing = 0
 	return scout
+
+
+func _test_ai_armor_awareness() -> void:
+	var engine := TurnEngine.new()
+	engine.setup(1)
+	var scout: ShipState = engine.ships[0]
+	var cruiser: ShipState = engine.ships[1]
+	cruiser.apply_allocation({ "guns": [0, 1, 2, 3], "engine": 0, "damage_control": 0 })
+	var cruiser_ai := ShipAI.for_ship(cruiser.def)
+	var scout_ai := ShipAI.for_ship(scout.def)
+
+	# OFFENSE: same firing position scores higher once the enemy facing it strikes
+	# has been stripped — the AI presses a breach instead of chipping fresh plate.
+	scout.hex = Vector2i(8, 8)
+	scout.facing = 0
+	var pos := Vector2i(8, 4)
+	var face := 3
+	var full := cruiser_ai._eval_position(cruiser, pos, face, scout)
+	var hit := HexMath.struck_facing(scout.hex, scout.facing, pos)
+	scout.armor_remaining[hit] = 0
+	var breached := cruiser_ai._eval_position(cruiser, pos, face, scout)
+	_check(breached > full, "AI values striking a stripped enemy facing over intact plate")
+	scout.armor_remaining[hit] = scout.def.armor[hit]   # restore
+
+	# DEFENSE: a position scores worse once the OWN facing it would present has
+	# been holed — the AI won't turn a breach toward the enemy.
+	var mh := Vector2i(8, 10)
+	var mf := 0
+	var before := scout_ai._eval_position(scout, mh, mf, cruiser)
+	var shown := HexMath.struck_facing(mh, mf, cruiser.hex)
+	scout.armor_remaining[shown] = 0
+	var after := scout_ai._eval_position(scout, mh, mf, cruiser)
+	_check(after < before, "AI avoids presenting an already-holed facing to the enemy")
+
+	# TORPEDO DISCIPLINE vs armour: loose on hard plating, hold once the facing is
+	# breached and a deck gun can exploit it for free.
+	var sc := ShipState.create(ShipLibrary.ship(&"helium_scout"), 0, Vector2i(5, 5), 0)
+	var ehex := sc.hex
+	for _k in 4:
+		ehex = HexMath.neighbor(ehex, 0)
+	var en := ShipState.create(ShipLibrary.ship(&"zodanga_cruiser"), 1, ehex, 3)
+	sc.apply_allocation({ "guns": [0, 4], "engine": 0, "damage_control": 0 })   # bow gun + tube
+	var sai := ShipAI.for_ship(sc.def)
+	var th := HexMath.struck_facing(en.hex, en.facing, sc.hex)
+	var fire_hard := sai.choose_fire(sc, en)
+	_check(4 in fire_hard, "torpedo looses against hard armour")
+	en.armor_remaining[th] = 1   # breach the struck facing
+	var fire_soft := sai.choose_fire(sc, en)
+	_check(not (4 in fire_soft), "torpedo held once the facing is breached and a gun bears")
+	_check(0 in fire_soft, "the deck gun still fires into the breach")
 
 
 func _test_ai_battle() -> void:

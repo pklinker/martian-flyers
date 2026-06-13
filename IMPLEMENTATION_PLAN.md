@@ -65,14 +65,14 @@ Key structural decisions already in force:
 
 | File | Contents | State |
 |---|---|---|
-| `ship_ai.gd` | `ShipAI` — a doctrine-driven opponent and pure client of the engine. Per-class doctrine weight table (`for_ship`, with entries for all four classes); one-ply positional utility evaluator `_eval_position` (range-band fit, own guns bearing, enemy guns denied, weak-facing protection); per-turn `allocate` (engine crew for desired speed → **a hand reserved per active fire** → guns → DC), `plot`, `choose_move` (best resulting position), `choose_fire` (all bearing guns; **torpedoes only on ≤4 to-hit — salvo discipline**). `allocate` **mans a torpedo tube first when the enemy is within reach** (the scout's main punch earns crew before the deck guns). `noise` hook + per-class weights = difficulty lever; deeper lookahead/Monte-Carlo is future | Done, tested |
+| `ship_ai.gd` | `ShipAI` — a doctrine-driven opponent and pure client of the engine. Per-class doctrine weight table (`for_ship`, with entries for all four classes); one-ply positional utility evaluator `_eval_position` (range-band fit, own guns bearing, enemy guns denied, weak-facing protection, **armour awareness**: `w_penetrate` aims at the enemy's thinnest/already-breached facing — since internals only flow once a facing is stripped — and `w_hole` refuses to present an own holed facing); per-turn `allocate` (engine crew for desired speed → **a hand reserved per active fire** → guns → DC), `plot`, `choose_move` (best resulting position), `choose_fire` (**every bearing deck gun — chipping armour is never wasted**; a finite **torpedo only on ≤4 to-hit AND against hard armour ≥3** — once a facing is breached the deck guns exploit it for free, so the AP fish is hoarded for plating they can't crack). `allocate` **mans a torpedo tube first when the enemy is within reach** (the scout's main punch earns crew before the deck guns). `noise` hook + per-class weights = difficulty lever; deeper lookahead/Monte-Carlo is future | Done, tested |
 
 ### tests/
 
 | File | Contents | State |
 |---|---|---|
-| `test_rules.gd` | `extends SceneTree` headless runner, 115 assertions across: hex math, impulse chart, turn mode + collision blocking, **map bounds (engine rule prunes off-field moves), impulse sequencer (`begin_movement`/`next_mover` cadence + `impulse_advanced` emission)**, range brackets, arcs, `guns_bearing_from`, `fire_preview` (bears/reasons/to-hit), engine-crew speed gate (`usable_max_speed`), reload/crew allocation, armor absorption, DAC determinism, magazine explosion, **torpedoes (armour-piercing bypass + plate not marked off; finite-ammo depletion, empty-tube gating, "no torpedoes" preview, deck guns unaffected)**, buoyancy grounding at the falling line, **DC repair feedback (`damage_control_repaired` fires per tank) + claw-back ordering (DC patches before the grounding check)**, capability erosion, **criticals (steering jam gates `can_turn`/legal moves + upkeep tick-down; fire ignition/burn/spread/douse; named officer casualties from bridge & crew hits), new ship classes (one-man flyer + battleship invariants and seeded AI battles)**, **AI evaluator doctrine preferences + a 5-seed ShipAI-vs-ShipAI battle (decisive, no deadlock, invariants)**, and a full greedy smoke battle. Exit code 0/1 | Done, **196/196 passing** on Godot 4.6.3 |
-| `ai_scan.gd` | Dev tool (not part of the suite): runs N ShipAI-vs-ShipAI battles on the engine's own bounded field (`engine.legal_moves_for`) and prints the win split / timeouts / avg turns. `-- N` for count, `-- 1 v` to trace one. The "200-seed battle scan" the validation methodology calls for. Post-criticals baseline: **scout 7% / cruiser 92%, ~1% timeout, avg ~10 turns** | Tool |
+| `test_rules.gd` | `extends SceneTree` headless runner, 115 assertions across: hex math, impulse chart, turn mode + collision blocking, **map bounds (engine rule prunes off-field moves), impulse sequencer (`begin_movement`/`next_mover` cadence + `impulse_advanced` emission)**, range brackets, arcs, `guns_bearing_from`, `fire_preview` (bears/reasons/to-hit), engine-crew speed gate (`usable_max_speed`), reload/crew allocation, armor absorption, DAC determinism, magazine explosion, **torpedoes (armour-piercing bypass + plate not marked off; finite-ammo depletion, empty-tube gating, "no torpedoes" preview, deck guns unaffected)**, buoyancy grounding at the falling line, **DC repair feedback (`damage_control_repaired` fires per tank) + claw-back ordering (DC patches before the grounding check)**, capability erosion, **criticals (steering jam gates `can_turn`/legal moves + upkeep tick-down; fire ignition/burn/spread/douse; named officer casualties from bridge & crew hits), new ship classes (one-man flyer + battleship invariants and seeded AI battles)**, **AI evaluator doctrine preferences (incl. armour awareness: presses a stripped enemy facing, hides own holes, hoards AP torpedoes for hard armour) + a 5-seed ShipAI-vs-ShipAI battle (decisive, no deadlock, invariants)**, and a full greedy smoke battle. Exit code 0/1 | Done, **201/201 passing** on Godot 4.6.3 |
+| `ai_scan.gd` | Dev tool (not part of the suite): runs N ShipAI-vs-ShipAI battles on the engine's own bounded field (`engine.legal_moves_for`) and prints the win split / timeouts / avg turns. `-- N` for count, `-- 1 v` to trace one. The "200-seed battle scan" the validation methodology calls for. Baseline after criticals + armour-aware AI: **scout 8% / cruiser 92%, ~0.5% timeout, avg ~10 turns** | Tool |
 
 Run: `godot --headless --path . -s res://tests/test_rules.gd`
 
@@ -245,6 +245,19 @@ ship directly at its per-class falling line. See GAME_DESIGN.md §2/§3.)*
 	  bearing / deny enemy arcs), protect weakest facing, withdraw when crippled.
 	  The cruiser now actively turns to present its broadside; the band term cured
 	  the old fly-apart deadlock (0 timeouts over 200 battles).
+- [x] **Armour-aware combat doctrine.** Damage is per-facing ablative — armour
+	  on the struck facing absorbs (and depletes) and **no internal damage flows
+	  until that facing is stripped to zero** (overflow on the breaking shot is
+	  kept; AP torpedoes and fires bypass by design). The evaluator now exploits
+	  this: `w_penetrate` rewards striking the enemy's thinnest/already-breached
+	  facing (so the AI keeps pounding one facing until it caves rather than
+	  circling onto fresh plate), `w_hole` refuses to present an own holed facing,
+	  and `choose_fire` fires **every** bearing deck gun (chipping armour is never
+	  wasted) but spends a finite AP torpedo only on hard armour (≥3) the guns
+	  can't crack — hoarding the fish and letting deck guns exploit a breach.
+	  Scan after the change: **scout 8% / cruiser 92%, ~0.5% timeout, avg ~10
+	  turns** (cruiser still rightly dominant; the scout is a slightly bigger
+	  threat for spending torpedoes more wisely). 5 new assertions.
 - [ ] Use the seeded engine for shallow lookahead / Monte Carlo rollouts
 	  (clone `ShipState`s, simulate candidate plots, score). *Framework is ready
 	  (the `noise` hook + cloneable state); the 1-ply evaluator above is what's
