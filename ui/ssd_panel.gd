@@ -14,7 +14,17 @@ const MARGIN := 14.0
 const PAPER := Color(0.95, 0.93, 0.86)
 const INK := Color(0.13, 0.11, 0.09)
 const FAINT := Color(0.13, 0.11, 0.09, 0.35)
-const WATERMARK := Color(0.13, 0.11, 0.09, 0.13)   # ship profile behind the boxes
+const WATERMARK := Color(0.13, 0.11, 0.09, 0.13)   # faint fill / detail
+const HULL_LINE := Color(0.13, 0.11, 0.09, 0.34)   # the hull outline itself
+
+## Top-down hull half-beam profile: fraction along the hull (nose=0, stern=1)
+## mapped to fraction of max beam. Shared by the drawn outline and the armor-box
+## placement so each facing's boxes sit exactly against the hull edge.
+const HULL_FR: Array[float] = [0.0, 0.10, 0.22, 0.38, 0.52, 0.68, 0.82, 0.93, 1.0]
+const HULL_WF: Array[float] = [0.0, 0.30, 0.62, 0.88, 1.0, 0.96, 0.82, 0.66, 0.50]
+## Fraction along the hull where each side facing's plating sits.
+const FWD_F := 0.30
+const AFT_F := 0.66
 const PENCIL := Color(0.42, 0.40, 0.38)        # shading on destroyed boxes
 const DAMAGE_X := Color(0.62, 0.13, 0.10)
 const FLASH := Color(0.85, 0.25, 0.15)
@@ -98,7 +108,7 @@ func _layout_height() -> float:
 	if ship == null:
 		return 200.0
 	var h := MARGIN + 44.0                     # title block
-	h += 18.0 + 4.0 * (16.0 + BOX + 10.0)      # armor grid: header + 4 rows
+	h += 18.0 + _armor_diagram_height()        # armor: header + hull diagram
 	h += 18.0 + (SYSTEM_ORDER.size() + 1) * ROW_H    # systems (+1 for buoyancy port/stbd split)
 	h += 18.0 + ship.def.gun_mounts.size() * 30.0  # guns
 	h += 34.0 + MARGIN                          # status footer
@@ -116,10 +126,6 @@ func _draw() -> void:
 	if ship == null:
 		return
 
-	# Faint ship profile behind the grid, like the printed silhouette on a real
-	# SFB sheet. Drawn first so every box and label sits on top of it.
-	_draw_profile_watermark()
-
 	var font := get_theme_default_font()
 	var y := MARGIN + 4.0
 
@@ -131,20 +137,9 @@ func _draw() -> void:
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 11, PENCIL)
 	y += 44.0
 
-	# --- Armor grid (spatial: bow top, stern bottom, port left, stbd right) ---
+	# --- Armor: a top-down hull with each facing's plating laid against its edge ---
 	y = _draw_section_header(font, y, "ARMOR")
-	var col_w := (PANEL_W - 2.0 * MARGIN) / 2.0
-	var cell_h := 16.0 + BOX + 10.0
-	# Row 0: bow, centered on the hull centerline
-	_draw_armor_cell(font, Vector2(PANEL_W / 2.0 - col_w / 2.0, y), col_w, 0, "center")
-	# Rows 1-2: port column left-aligned, starboard column right-aligned
-	_draw_armor_cell(font, Vector2(MARGIN, y + cell_h), col_w, 5, "left")
-	_draw_armor_cell(font, Vector2(MARGIN + col_w, y + cell_h), col_w, 1, "right")
-	_draw_armor_cell(font, Vector2(MARGIN, y + 2.0 * cell_h), col_w, 4, "left")
-	_draw_armor_cell(font, Vector2(MARGIN + col_w, y + 2.0 * cell_h), col_w, 2, "right")
-	# Row 3: stern, centered on the hull centerline
-	_draw_armor_cell(font, Vector2(PANEL_W / 2.0 - col_w / 2.0, y + 3.0 * cell_h), col_w, 3, "center")
-	y += 4.0 * cell_h
+	y = _draw_armor_diagram(font, y)
 
 	# --- Systems ---
 	y = _draw_section_header(font, y, "SYSTEMS")
@@ -227,34 +222,106 @@ func _draw_section_header(font: Font, y: float, title: String) -> float:
 	return y + 18.0
 
 
-## One armor facing: label plus its box row. `align` ("left"/"right"/"center")
-## positions the row within the cell: port cells hug the left, starboard the
-## right (like a real SSD), and the bow/stern rows center on the hull centerline
-## so they sit on the nose and tail of the top-down silhouette.
-func _draw_armor_cell(font: Font, pos: Vector2, cell_w: float, facing: int,
-		align: String) -> void:
+# ---------------------------------------------------------------------------
+# Armor diagram: a top-down hull with each facing's plating laid against the
+# matching edge — bow on the nose, port/starboard along the flanks, stern on
+# the tail. The hull profile (HULL_FR/HULL_WF) drives both the drawn outline
+# and where the box rows anchor, so plating always hugs the hull.
+# ---------------------------------------------------------------------------
+
+## Vertical space the diagram needs: bow plating above the nose, the hull, then
+## stern plating + label below the tail.
+func _armor_diagram_height() -> float:
+	return 16.0 + BOX + _hull_length() + 10.0 + BOX + 16.0
+
+
+## Hull length scales a little with size so a battleship's flanks have room for
+## their long plating rows; the beam scales too (but stays < length).
+func _hull_length() -> float:
+	var buoy := ship.def.system_count(ShipDef.SystemType.BUOYANCY)
+	return clampf(180.0 + buoy * 3.0, 180.0, 250.0)
+
+func _hull_beam_max() -> float:
+	var buoy := ship.def.system_count(ShipDef.SystemType.BUOYANCY)
+	return clampf(52.0 + buoy * 1.0, 52.0, 78.0)
+
+## Half-beam (px) at fraction f along the hull, interpolated from the profile.
+func _hull_half_beam(f: float, beam_max: float) -> float:
+	f = clampf(f, 0.0, 1.0)
+	for i in range(HULL_FR.size() - 1):
+		if f <= HULL_FR[i + 1]:
+			var t := (f - HULL_FR[i]) / (HULL_FR[i + 1] - HULL_FR[i])
+			return lerpf(HULL_WF[i], HULL_WF[i + 1], t) * beam_max
+	return HULL_WF[HULL_WF.size() - 1] * beam_max
+
+
+func _draw_armor_diagram(font: Font, top_y: float) -> float:
+	var cx := PANEL_W / 2.0
+	var beam_max := _hull_beam_max()
+	var hull_len := _hull_length()
+	var bow_label_y := top_y
+	var bow_box_y := top_y + 14.0
+	var nose_y := bow_box_y + BOX + 8.0
+	var tail_y := nose_y + hull_len
+
+	# The hull itself: an authored top-down texture overrides the drawn outline.
+	if _profile_tex != null:
+		draw_texture_rect(_profile_tex,
+				Rect2(cx - beam_max, nose_y, beam_max * 2.0, hull_len),
+				false, Color(1, 1, 1, 0.18))
+	else:
+		_draw_topdown_hull(cx, nose_y, tail_y, beam_max)
+
+	# Bow (#0) above the nose, stern (#3) below the tail — both centered.
+	_draw_facing_centered(font, 0, cx, bow_label_y, bow_box_y)
+	var stern_box_y := tail_y + 10.0
+	_draw_facing_centered(font, 3, cx, stern_box_y + BOX + 2.0, stern_box_y)
+
+	# Flank plating laid against the hull edge at the forward and aft quarters.
+	_draw_facing_flank(font, 5, FWD_F, -1, cx, nose_y, hull_len, beam_max)  # fwd port
+	_draw_facing_flank(font, 1, FWD_F,  1, cx, nose_y, hull_len, beam_max)  # fwd stbd
+	_draw_facing_flank(font, 4, AFT_F, -1, cx, nose_y, hull_len, beam_max)  # aft port
+	_draw_facing_flank(font, 2, AFT_F,  1, cx, nose_y, hull_len, beam_max)  # aft stbd
+
+	return stern_box_y + BOX + 16.0
+
+
+## A centered facing (bow/stern): box row centered on the keel, label centered
+## over it. `label_y`/`box_y` let the caller put the label above (bow) or the
+## boxes above (stern).
+func _draw_facing_centered(font: Font, facing: int, cx: float,
+		label_y: float, box_y: float) -> void:
 	var total: int = ship.def.armor[facing]
 	var row_w := total * (BOX + GAP) - GAP
-	var label := "#%d %s" % [facing, FACING_LABELS[facing]]
 	var flash := facing == _flash_facing
-	var label_color := FLASH if flash else PENCIL
-	# Box-row x within the cell.
-	var lx := pos.x
-	if align == "right":
-		lx = pos.x + cell_w - row_w
-	elif align == "center":
-		lx = pos.x + (cell_w - row_w) / 2.0
-	# Label tracks the row: left-edge for left, right-edge for right, centered
-	# over the boxes for center (clamped so short rows never push text off-panel).
-	var label_w := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
-	var label_x := lx
-	if align == "right":
-		label_x = lx + row_w - label_w
-	elif align == "center":
-		label_x = lx + (row_w - label_w) / 2.0
-	draw_string(font, Vector2(label_x, pos.y + 12.0), label,
-			HORIZONTAL_ALIGNMENT_LEFT, -1, 10, label_color)
-	_draw_box_row(Vector2(lx, pos.y + 16.0), total, ship.armor_remaining[facing], flash)
+	var label := "#%d %s" % [facing, FACING_LABELS[facing]]
+	var lw := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
+	draw_string(font, Vector2(cx - lw / 2.0, label_y + 10.0), label,
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 10, FLASH if flash else PENCIL)
+	_draw_box_row(Vector2(cx - row_w / 2.0, box_y), total, ship.armor_remaining[facing], flash)
+
+
+## A flank facing: the box row sits just outside the hull edge at fraction `f`,
+## on the given `side` (-1 port / +1 starboard), with its label above, kept on
+## the outboard side so it never crosses the hull.
+func _draw_facing_flank(font: Font, facing: int, f: float, side: int,
+		cx: float, nose_y: float, hull_len: float, beam_max: float) -> void:
+	var total: int = ship.def.armor[facing]
+	var row_w := total * (BOX + GAP) - GAP
+	var fy := nose_y + f * hull_len
+	var edge := cx + side * _hull_half_beam(f, beam_max)
+	var gap := 12.0
+	var bx := (edge - gap - row_w) if side < 0 else (edge + gap)
+	var box_y := fy - BOX / 2.0
+	var flash := facing == _flash_facing
+	var label := "#%d %s" % [facing, FACING_LABELS[facing]]
+	var lw := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
+	# Label hugs the box row's outboard edge (left for port, right for stbd).
+	var label_x := (bx + row_w - lw) if side < 0 else bx
+	label_x = maxf(label_x, 2.0)
+	draw_string(font, Vector2(label_x, box_y - 4.0), label,
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 10, FLASH if flash else PENCIL)
+	_draw_box_row(Vector2(bx, box_y), total, ship.armor_remaining[facing], flash)
 
 
 ## A row of `total` boxes with `remaining` intact: surviving boxes are clean
@@ -353,60 +420,34 @@ func _draw_arc_rose(center: Vector2, arcs: Array, dead: bool) -> void:
 	draw_arc(center, radius, 0.0, TAU, 24, PENCIL if dead else INK, 1.0)
 
 
-## The watermark: a faint TOP-DOWN hull, nose up, placed inside the armor grid
-## so the spatial armor boxes sit on the matching facing — bow boxes at the nose,
-## port boxes down the left flank, starboard down the right, stern at the tail.
-## An authored texture (top-down, nose up) overrides the drawn hull if present.
-func _draw_profile_watermark() -> void:
-	# Re-derive the armor grid band from the same layout constants _draw() uses:
-	# title block (44) + section header (18) below the top margin, four cells tall.
-	var armor_top := MARGIN + 4.0 + 44.0 + 18.0
-	var cell_h := 16.0 + BOX + 10.0
-	var nose_y := armor_top + 12.0                         # tip just at the bow boxes
-	var tail_y := armor_top + 3.0 * cell_h + BOX + 18.0    # just past the stern boxes
-	var cx := PANEL_W / 2.0
-	# Beam scales gently with hull size so a battleship reads broader than a scout,
-	# but the ship always stays longer than it is wide.
-	var buoy := ship.def.system_count(ShipDef.SystemType.BUOYANCY)
-	var beam: float = clampf(38.0 + buoy * 1.6, 38.0, 82.0)
-	if _profile_tex != null:
-		draw_texture_rect(_profile_tex,
-				Rect2(cx - beam, nose_y, beam * 2.0, tail_y - nose_y),
-				false, Color(1, 1, 1, 0.16))
-		return
-	_draw_topdown_hull(cx, nose_y, tail_y, beam)
-
-
 ## A code-drawn top-down flyer: a pointed-bow hull tapering to a squared stern,
 ## a centerline, a bridge ring near the bow, and a propeller disc off each
-## quarter aft. Nose points up (facing 0 = bow), matching the armor layout.
+## quarter aft. Nose points up (facing 0 = bow), matching the armor layout. Uses
+## the shared HULL_FR/HULL_WF profile so the armor boxes anchor to this exact
+## outline.
 func _draw_topdown_hull(cx: float, nose_y: float, tail_y: float, beam: float) -> void:
 	var length := tail_y - nose_y
-	# Half-beam profile from nose (f=0) to stern (f=1): swells to full beam
-	# amidships, then narrows to a squared-off tail.
-	var fr: Array[float] = [0.0, 0.10, 0.22, 0.38, 0.52, 0.68, 0.82, 0.93, 1.0]
-	var wf: Array[float] = [0.0, 0.30, 0.62, 0.88, 1.0, 0.96, 0.82, 0.66, 0.50]
 	var right := PackedVector2Array()
-	for i in fr.size():
-		right.append(Vector2(cx + wf[i] * beam, nose_y + fr[i] * length))
+	for i in HULL_FR.size():
+		right.append(Vector2(cx + HULL_WF[i] * beam, nose_y + HULL_FR[i] * length))
 	# Close the loop by mirroring the right edge back up the left side.
 	var hull := PackedVector2Array()
 	hull.append_array(right)
 	for i in range(right.size() - 1, -1, -1):
 		var p := right[i]
 		hull.append(Vector2(2.0 * cx - p.x, p.y))
-	draw_polyline(hull + PackedVector2Array([hull[0]]), WATERMARK, 2.0)
+	draw_polyline(hull + PackedVector2Array([hull[0]]), HULL_LINE, 2.0)
 
 	# Centerline keel.
 	draw_line(Vector2(cx, nose_y + 0.06 * length), Vector2(cx, tail_y - 0.04 * length),
 			WATERMARK, 1.0)
 	# Bridge ring forward.
-	draw_arc(Vector2(cx, nose_y + 0.26 * length), beam * 0.18, 0.0, TAU, 16, WATERMARK, 1.2)
+	draw_arc(Vector2(cx, nose_y + 0.26 * length), beam * 0.18, 0.0, TAU, 16, HULL_LINE, 1.2)
 	# A propeller disc off each stern quarter.
 	var pr := beam * 0.22
 	for sx in [-1.0, 1.0]:
 		var hub := Vector2(cx + sx * beam * 0.40, tail_y - 0.04 * length)
-		draw_arc(hub, pr, 0.0, TAU, 14, WATERMARK, 1.0)
+		draw_arc(hub, pr, 0.0, TAU, 14, HULL_LINE, 1.0)
 
 
 func _draw_banner(font: Font, text: String) -> void:

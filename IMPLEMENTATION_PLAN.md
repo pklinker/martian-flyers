@@ -81,7 +81,7 @@ Run: `godot --headless --path . -s res://tests/test_rules.gd`
 
 | File | Contents | State |
 |---|---|---|
-| `ssd_panel.gd` | `SSDPanel` (Control, custom `_draw`): data-driven SSD sheet for any `ShipState`. Spatial armor layout (bow top / stern bottom / port left / stbd right), system box rows, gun rows with 6-sector arc roses, reload pips, manned dots, destroyed strike-through; **torpedo tubes shown as `[T]` with an AP note and ammo diamonds** (filled = racked, hollow = loosed); pencil-shaded boxes with red X marked off from the right; struck-facing flash (0.6 s); live status footer (**plus a red FIRES / STEERING JAMMED critical line**); DESTROYED/GROUNDED banner; **a faint top-down hull watermark inside the armor grid** (armor boxes sit on the matching facing; authored `assets/ships/<id>_profile.{png,svg}` if present, else a code-drawn per-class hull). Zero rules logic | Done, renders |
+| `ssd_panel.gd` | `SSDPanel` (Control, custom `_draw`): data-driven SSD sheet for any `ShipState`. Spatial armor layout (bow top / stern bottom / port left / stbd right), system box rows, gun rows with 6-sector arc roses, reload pips, manned dots, destroyed strike-through; **torpedo tubes shown as `[T]` with an AP note and ammo diamonds** (filled = racked, hollow = loosed); pencil-shaded boxes with red X marked off from the right; struck-facing flash (0.6 s); live status footer (**plus a red FIRES / STEERING JAMMED critical line**); DESTROYED/GROUNDED banner; **a top-down hull armor diagram** (the ship outline drawn down the middle with each facing's plating laid against the matching hull edge; authored `assets/ships/<id>_profile.{png,svg}` overrides the drawn hull). Zero rules logic | Done, renders |
 | `ssd_demo.gd` / `ssd_demo.tscn` | Two ships nose-to-nose at range 2; volley / exchange / next-turn / new-game buttons; combat log. All through engine signals | Done |
 | `hex_map.gd` | `HexMapView` (Control): flat-top grid matching `HexMath` geometry exactly, a **follow-camera** that frames the live ships each draw (holds a comfortable default zoom and scrolls to keep them centered, zooming out only when they separate; grid culled to the viewport, `clip_contents`), pixel↔hex with cube rounding (round-trip verified), defers `contains()` to `engine.map_contains` (rules own the bounds), ship tokens (facing arrow, side color, active ring, wreck X), legal-move highlights with resulting-facing ticks, `move_clicked`/`hex_clicked`/`map_pressed` signals; **a transient combat-effects layer** (`add_tracer`/`add_flash`/`clear_effects`): fading firer→target shell/torpedo streaks and expanding hit/explosion bursts, animated on `_process` and self-stopping when idle. Zero rules logic | Done |
 | `main_menu.gd` / `main_menu.tscn` | **Boot scene.** Parchment-and-ink title splash (scout/cruiser facing glyphs over an ink rule), Start Engagement → `change_scene_to_file` into the map, Quit. No rules or state — pure navigation | Done |
@@ -339,17 +339,20 @@ ship directly at its per-class falling line. See GAME_DESIGN.md §2/§3.)*
 	  (tracer + fire cue per shot, hit/explosion flash + cue on damage), with a
 	  final burst over the stricken flyer at game over (the only effect for a
 	  grounding).
-- [x] **SSD art pass.** `ssd_panel.gd` draws a faint **top-down** hull watermark
-	  (13% ink) *inside the armor grid*, so the spatial armor boxes sit on the
-	  matching facing — bow boxes on the nose, port/starboard down the flanks,
-	  stern on the tail (the bow/stern rows were re-centered on the hull
-	  centerline for this; `_draw_armor_cell` now takes a left/right/center
-	  align). The code-drawn fallback (`_draw_topdown_hull`: pointed-bow hull,
-	  centerline, forward bridge ring, twin aft propeller discs) scales its beam
-	  by hull size so each class reads as itself; an authored
-	  `assets/ships/<id>_profile.{png,svg}` (top-down, nose up) overrides it.
-	  **See `ART_PLAN.md §5`** for the updated authoring contract; the remaining
-	  items there (tokens, fonts, banners, terrain tiles) are offline art tasks.
+- [x] **SSD art pass.** The ARMOR section is now a **top-down hull diagram**
+	  (`_draw_armor_diagram`): the ship outline is drawn down the middle and each
+	  facing's plating is laid **against the matching hull edge** — bow on the
+	  nose, fwd/aft port down the left flank, fwd/aft starboard down the right,
+	  stern on the tail. A shared half-beam profile (`HULL_FR`/`HULL_WF`,
+	  `_hull_half_beam`) drives both the drawn outline and where the box rows
+	  anchor, so plating always hugs the hull; hull length and beam scale with
+	  size so each class reads as itself. The code-drawn fallback
+	  (`_draw_topdown_hull`: pointed-bow hull, centerline, forward bridge ring,
+	  twin aft propeller discs) is overridden by an authored
+	  `assets/ships/<id>_profile.{png,svg}` (top-down, nose up) when present.
+	  `_layout_height` grew to fit the taller diagram. **See `ART_PLAN.md §5`**
+	  for the authoring contract; the remaining items there (tokens, fonts,
+	  banners, terrain tiles) are offline art tasks.
 - [x] **macOS export preset, icon.** `export_presets.cfg` carries a universal
 	  macOS preset (bundle id, version, hardened-runtime entitlements all off —
 	  the game needs none, codesign/notarization toggles off with documented
