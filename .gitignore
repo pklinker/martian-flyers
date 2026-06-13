@@ -19,4 +19,4 @@ dist/
 # OS-specific overrides
 .DS_Store
 Thumbs.db
-
+.claude
