@@ -47,6 +47,9 @@ func _build_ui() -> void:
 	gap.custom_minimum_size = Vector2(0, 36)
 	col.add_child(gap)
 
+	# Offered only when a battle was suspended via the in-game Menu button.
+	if BattleConfig.has_resume():
+		_add_menu_button(col, "Resume Battle", _on_resume)
 	_add_menu_button(col, "Build Fleet", _on_build_fleet)
 	_add_menu_button(col, "Quick Engagement", _on_start)
 	_add_menu_button(col, "Quit", _on_quit)
@@ -59,6 +62,11 @@ func _add_menu_button(parent: Control, label: String, handler: Callable) -> void
 	b.add_theme_font_size_override("font_size", 20)
 	b.pressed.connect(handler)
 	parent.add_child(b)
+
+
+func _on_resume() -> void:
+	BattleConfig.resume = true   # the map reloads the suspended battle on boot
+	get_tree().change_scene_to_file(GAME_SCENE)
 
 
 func _on_build_fleet() -> void:
