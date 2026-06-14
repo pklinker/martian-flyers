@@ -49,7 +49,7 @@ var roster_bar: HBoxContainer
 # Phase bars (only one visible at a time, beneath the persistent top bar).
 var alloc_bar: VBoxContainer     # Crew row on top, Stats + Action row below
 var plot_bar: HBoxContainer
-var fire_bar: HBoxContainer
+var fire_bar: VBoxContainer       # target row on top, gun chips wrapping below
 
 # Plot-bar widgets (built once).
 var speed_label: Label
@@ -152,7 +152,8 @@ func _build_ui() -> void:
 	spd_up = _add_button(plot_bar, "Speed +", _on_speed.bind(1), "stepper")
 	begin_btn = _add_button(plot_bar, "Begin Movement  ▶", _on_begin_movement, "primary")
 
-	fire_bar = HBoxContainer.new()
+	# A VBox: the ship→target header (with Resolve) on top, gun chips below.
+	fire_bar = VBoxContainer.new()
 	fire_bar.add_theme_constant_override("separation", 8)
 	top_v.add_child(fire_bar)
 
@@ -744,7 +745,9 @@ func _refresh_alloc_display() -> void:
 	var cap: int = mini(p.effective_max_speed(), engine_value * rate)
 	crew_label.text = "   CREW %d / %d   (top speed %d)   " % [used, pool, cap]
 	crew_label.modulate = Color(0.85, 0.3, 0.2) if used > pool else Color.WHITE
-	confirm_btn.disabled = used > pool
+	# Nothing to commit when over budget, or when this ship is already committed
+	# and untouched (editing the plan clears the flag and re-enables the button).
+	confirm_btn.disabled = used > pool or bool(st.get("committed", false))
 	alloc_proceed_btn.disabled = not _all_alloc_committed()
 
 
@@ -921,8 +924,10 @@ func _default_choice(ps: ShipState, focus: ShipState) -> Array[int]:
 	return choice
 
 
-## Builds a toggle per gun that bears on the active ship's focus target, and a
-## greyed line per gun that can't fire (with the reason).
+## Row 1: the ship → focus-target header with a (normal-sized) Resolve button.
+## Row 2: every gun as a compact chip that wraps — bearing guns are live toggles
+## (accent when armed), guns that can't fire are dim, disabled chips with the
+## reason. Keeps full per-gun status without the tall one-per-line sprawl.
 func _rebuild_fire_bar() -> void:
 	for c in fire_bar.get_children():
 		fire_bar.remove_child(c)   # detach now; queue_free is deferred a frame
@@ -930,14 +935,30 @@ func _rebuild_fire_bar() -> void:
 	var p := _active
 	var focus: ShipState = _fire_focus.get(p, null)
 	var choice: Array = _fire_choice.get(p, [])
+
+	# --- Row 1: target header (left) + Resolve (right). ----------------------
+	var header := HBoxContainer.new()
+	header.add_theme_constant_override("separation", 8)
+	fire_bar.add_child(header)
 	if focus == null:
-		fire_bar.add_child(UiTheme.label("%s — no enemy in reach" % p.def.display_name, UiTheme.COL_MUTED, 14))
-		_add_button(fire_bar, "Resolve Fire  ▶", _on_resolve_fire, "primary")
+		var none := UiTheme.label("%s — no enemy in reach" % p.def.display_name, UiTheme.COL_MUTED, 14)
+		none.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		none.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		header.add_child(none)
+		_add_button(header, "Resolve Fire  ▶", _on_resolve_fire, "primary")
+		fire_guns_row = null
 		return
-	# Target header: ship -> focused enemy, the enemy name in accent.
-	fire_bar.add_child(UiTheme.label("%s →" % p.def.display_name, UiTheme.COL_TEXT, 14, true))
-	fire_bar.add_child(UiTheme.label(focus.def.display_name, UiTheme.COL_ACCENT, 14, true))
-	# Bearing guns become toggles; guns that can't fire are dim labels with reason.
+	for part in [UiTheme.label(p.def.display_name, UiTheme.COL_TEXT, 15, true),
+			UiTheme.label("→", UiTheme.COL_MUTED, 15),
+			UiTheme.label(focus.def.display_name, UiTheme.COL_ACCENT, 15, true)]:
+		part.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		header.add_child(part)
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.add_child(spacer)
+	_add_button(header, "Resolve Fire  ▶", _on_resolve_fire, "primary")
+
+	# --- Row 2: gun chips (wrap to as many rows as needed, usually one). ------
 	var guns := HFlowContainer.new()
 	guns.add_theme_constant_override("h_separation", 6)
 	guns.add_theme_constant_override("v_separation", 4)
@@ -959,11 +980,15 @@ func _rebuild_fire_bar() -> void:
 			t.toggled.connect(func(_on: bool) -> void: _on_fire_toggled())
 			guns.add_child(t)
 		else:
-			guns.add_child(UiTheme.label("%s · %s" % [label, str(pv["reason"])], UiTheme.COL_MUTED.darkened(0.1), 12))
-	_add_button(fire_bar, "Resolve Fire  ▶", _on_resolve_fire, "primary")
+			# A dim, non-interactive chip carrying the reason it can't fire.
+			var chip := UiTheme.toggle("%s · %s" % [label, str(pv["reason"])])
+			chip.disabled = true
+			guns.add_child(chip)
 
 
 func _on_fire_toggled() -> void:
+	if fire_guns_row == null:
+		return
 	var typed: Array[int] = []
 	typed.assign(_checked_mounts(fire_guns_row))
 	_fire_choice[_active] = typed
