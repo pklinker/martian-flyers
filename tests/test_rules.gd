@@ -78,6 +78,10 @@ func _init() -> void:
 	_test_fleet_cadence()
 	_test_fleet_ai_battle()
 
+	_suite("Points-buy fleets")
+	_test_point_cost()
+	_test_fleet_builder()
+
 	_suite("AI")
 	_test_ai_evaluator()
 	_test_ai_armor_awareness()
@@ -1096,6 +1100,109 @@ func _play_out_fleet(engine: TurnEngine) -> Dictionary:
 			break
 		engine.run_upkeep()
 	return res
+
+
+func _test_point_cost() -> void:
+	# Determinism: a class prices identically every call.
+	var scout := ShipLibrary.ship(&"helium_scout")
+	_check_eq(scout.point_cost(), scout.point_cost(), "point_cost is deterministic")
+
+	# Ordering: a heavier hull always costs more than a lighter one.
+	var one_man := ShipLibrary.ship(&"one_man_flyer").point_cost()
+	var sc := ShipLibrary.ship(&"helium_scout").point_cost()
+	var cr := ShipLibrary.ship(&"zodanga_cruiser").point_cost()
+	var bb := ShipLibrary.ship(&"helium_battleship").point_cost()
+	_check(one_man < sc and sc < cr and cr < bb,
+			"cost is monotone: one-man < scout < cruiser < battleship (%d<%d<%d<%d)" % [one_man, sc, cr, bb])
+
+	# Adding a gun raises the cost; adding armour raises the cost.
+	var base := ShipLibrary.ship(&"helium_scout").point_cost()
+	var more_guns := ShipLibrary.ship(&"helium_scout").duplicate(true) as ShipDef
+	var mounts := more_guns.gun_mounts.duplicate()
+	mounts.append({ "gun_id": &"heavy_gun", "arcs": [0, 1, 5], "label": "Extra Battery" })
+	more_guns.gun_mounts.assign(mounts)
+	_check(more_guns.point_cost() > base, "adding a gun mount raises the cost")
+
+	var more_armor := ShipLibrary.ship(&"helium_scout").duplicate(true) as ShipDef
+	var arm := more_armor.armor.duplicate()
+	arm[0] += 5
+	more_armor.armor.assign(arm)
+	_check(more_armor.point_cost() > base, "adding armour raises the cost")
+
+	# Non-linearity: one strong hull costs MORE than two weak hulls whose stats
+	# sum to it (convex exponents + the offence×defence cross term).
+	var strong := _scaled_hull(2)
+	var weak := _scaled_hull(1)
+	_check(strong.point_cost() > 2 * weak.point_cost(),
+			"one strong hull (%d) costs more than two half-hulls (2x%d) of the same raw stats" % [
+			strong.point_cost(), weak.point_cost()])
+
+	# An override pins the cost, bypassing the derivation.
+	var pinned := ShipLibrary.ship(&"helium_scout").duplicate(true) as ShipDef
+	pinned.point_cost_override = 999
+	_check_eq(pinned.point_cost(), 999, "point_cost_override pins the cost")
+
+
+## A synthetic hull scaled by `m`: every cost-driving stat is m× the base, so
+## _scaled_hull(2) has exactly the summed raw stats of two _scaled_hull(1)s.
+func _scaled_hull(m: int) -> ShipDef:
+	var d := ShipDef.new()
+	d.id = &"synth_hull"
+	d.display_name = "Synthetic Hull"
+	var av := 4 * m
+	d.armor.assign([av, av, av, av, av, av])
+	var mounts: Array[Dictionary] = []
+	for _i in 3 * m:
+		mounts.append({ "gun_id": &"heavy_gun", "arcs": [0, 1], "label": "Battery" })
+	d.gun_mounts.assign(mounts)
+	d.systems = {
+		ShipDef.SystemType.BUOYANCY: 10 * m,
+		ShipDef.SystemType.ENGINE: 4 * m,
+		ShipDef.SystemType.PROPELLER: 2 * m,
+		ShipDef.SystemType.RUDDER: 2 * m,
+		ShipDef.SystemType.BRIDGE: 1 * m,
+		ShipDef.SystemType.CREW: 10 * m,
+		ShipDef.SystemType.MAGAZINE: 1 * m,
+		ShipDef.SystemType.DAMAGE_CONTROL: 1 * m,
+	}
+	d.base_max_speed = 4 * m
+	d.speed_per_engine_crew = 2
+	d.turn_mode_by_speed.assign([2, 2, 2, 2])
+	return d
+
+
+func _test_fleet_builder() -> void:
+	var classes := FleetBuilder.available_classes()
+	_check(classes.size() >= 4, "catalog lists every ship class")
+	_check(classes[0].has("id") and classes[0].has("display_name") and classes[0].has("point_cost"),
+			"catalog entries carry id / display_name / point_cost")
+
+	var scout_cost := ShipLibrary.ship(&"helium_scout").point_cost()
+	var cruiser_cost := ShipLibrary.ship(&"zodanga_cruiser").point_cost()
+	_check_eq(FleetBuilder.roster_cost([&"helium_scout", &"helium_scout"]), scout_cost * 2,
+			"roster_cost sums the class costs")
+
+	_check(FleetBuilder.is_valid([&"helium_scout"], scout_cost),
+			"a roster exactly on budget is valid")
+	_check(not FleetBuilder.is_valid([&"zodanga_cruiser"], cruiser_cost - 1),
+			"an over-budget roster is rejected")
+	_check(not FleetBuilder.is_valid([], 1000), "an empty roster is invalid")
+
+	# Seeded generation: deterministic, within budget, non-empty.
+	var rng1 := RandomNumberGenerator.new()
+	rng1.seed = 12345
+	var rng2 := RandomNumberGenerator.new()
+	rng2.seed = 12345
+	var r1 := FleetBuilder.generate_roster(300, rng1)
+	var r2 := FleetBuilder.generate_roster(300, rng2)
+	_check_eq(r1, r2, "generate_roster is deterministic for a fixed seed")
+	_check(not r1.is_empty(), "generated roster is non-empty")
+	_check(FleetBuilder.roster_cost(r1) <= 300, "generated roster stays within budget (%d <= 300)" % FleetBuilder.roster_cost(r1))
+	# A budget below the cheapest hull still yields a (single, fallback) ship.
+	var rng3 := RandomNumberGenerator.new()
+	rng3.seed = 7
+	_check(not FleetBuilder.generate_roster(1, rng3).is_empty(),
+			"a tiny budget still fields one fallback hull")
 
 
 ## Nearest living enemy of `s` across the whole fleet (mirrors ShipAI._enemy).

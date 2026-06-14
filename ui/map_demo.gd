@@ -74,7 +74,7 @@ var alloc_guns_row: HBoxContainer
 var _alloc: Dictionary = {}       # ship -> { guns:Array, engine, dc, lookout, committed }
 var _alloc_initialized := false   # prefill once per game; carry plans forward after
 var _plot_base: Dictionary = {}   # ship -> speed at the start of PLOT (accel limit)
-var _fire_targets: Dictionary = {}  # ship -> { mount_index -> enemy ShipState }
+var _fire_focus: Dictionary = {}    # ship -> the enemy ShipState it is targeting
 var _fire_choice: Dictionary = {}   # ship -> Array[int] of mounts the player will fire
 
 var _active: ShipState            # the player ship the phase bar is editing
@@ -105,6 +105,7 @@ func _build_ui() -> void:
 	phase_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	top.add_child(phase_label)
 	ssd_toggle_btn = _add_button(top, "Hide Ships", _toggle_ssd)
+	_add_button(top, "Recenter", _on_recenter)
 	_add_button(top, "Save", _on_save)
 	_add_button(top, "Load", _on_load)
 	_add_button(top, "New Game", _new_game)
@@ -227,6 +228,11 @@ func _on_map_pressed() -> void:
 		_set_ssd_visible(false)
 
 
+## Frame the whole engagement again (after the player has panned/zoomed around).
+func _on_recenter() -> void:
+	map.frame_ships()
+
+
 ## Centered modal shown when the game ends; hidden at new-game start.
 func _build_game_over_overlay() -> void:
 	game_over_overlay = Panel.new()
@@ -291,20 +297,25 @@ func _show_bar(ph: DemoPhase) -> void:
 
 func _new_game() -> void:
 	var e := TurnEngine.new()
-	# A fixed 2-v-2: your squadron (Scout + One-Man Flyer) against the AI's
-	# (Cruiser + Battleship). Placed nose-to-nose, no overlap (the engine nudges
-	# any clash off the stack anyway).
-	e.setup_fleet([
-		{ "ship_id": &"helium_scout", "side": PLAYER_SIDE, "hex": Vector2i(20, 10), "facing": 1 },
-		{ "ship_id": &"one_man_flyer", "side": PLAYER_SIDE, "hex": Vector2i(20, 12), "facing": 1 },
-		{ "ship_id": &"zodanga_cruiser", "side": AI_SIDE, "hex": Vector2i(32, 4), "facing": 4 },
-		{ "ship_id": &"helium_battleship", "side": AI_SIDE, "hex": Vector2i(32, 6), "facing": 4 },
-	], int(Time.get_unix_time_from_system()))
+	var seed := int(Time.get_unix_time_from_system())
+	if BattleConfig.pending and not BattleConfig.player_roster.is_empty() \
+			and not BattleConfig.ai_roster.is_empty():
+		# Fleets chosen in the points-buy builder: lay them on deployment lines.
+		e.setup_rosters(BattleConfig.player_roster, BattleConfig.ai_roster, seed)
+	else:
+		# Quick Battle default: your squadron (Scout + One-Man Flyer) against the
+		# AI's (Cruiser + Battleship), nose-to-nose (the engine nudges any clash).
+		e.setup_fleet([
+			{ "ship_id": &"helium_scout", "side": PLAYER_SIDE, "hex": Vector2i(20, 10), "facing": 1 },
+			{ "ship_id": &"one_man_flyer", "side": PLAYER_SIDE, "hex": Vector2i(20, 12), "facing": 1 },
+			{ "ship_id": &"zodanga_cruiser", "side": AI_SIDE, "hex": Vector2i(32, 4), "facing": 4 },
+			{ "ship_id": &"helium_battleship", "side": AI_SIDE, "hex": Vector2i(32, 6), "facing": 4 },
+		], seed)
 	_bind_engine(e)
 	_alloc = {}
 	_alloc_initialized = false
 	_plot_base = {}
-	_fire_targets = {}
+	_fire_focus = {}
 	_fire_choice = {}
 	log_box.clear()
 	log_box.append_text("Engagement over the dead sea bottom. You command the blue squadron.\n")
@@ -330,6 +341,7 @@ func _bind_engine(e: TurnEngine) -> void:
 	map.clear_highlights()
 	map.clear_effects()
 	map.set_fire_targets([])
+	map.frame_ships()        # one-shot fit of both fleets; the player pans from here
 	_build_ssd_panels()
 
 
@@ -382,7 +394,7 @@ func _on_load() -> void:
 	_bind_engine(loaded)
 	_alloc = {}
 	_plot_base = {}
-	_fire_targets = {}
+	_fire_focus = {}
 	_fire_choice = {}
 	for ps in _players():
 		var pa := ps.allocation
@@ -795,6 +807,7 @@ func _advance_movement() -> void:
 			continue   # boxed in or hard against the map edge: holds this impulse
 		if s.side == PLAYER_SIDE:
 			_active = s
+			map.center_on(s.hex)   # bring the ship you must move into view
 			map.set_highlights(moves, s)
 			phase_label.text = "Movement — impulse %d / 8: move the %s (click a green hex)" % [
 					engine.current_impulse, s.def.display_name]
@@ -816,7 +829,7 @@ func _on_move_clicked(move: Dictionary) -> void:
 func _enter_fire() -> void:
 	phase = DemoPhase.FIRE
 	map.clear_highlights()
-	_fire_targets = {}
+	_fire_focus = {}
 	_fire_choice = {}
 	for ps in _players():
 		_build_fire_defaults(ps)
@@ -826,77 +839,56 @@ func _enter_fire() -> void:
 	_rebuild_fire_bar()
 	_update_fire_markers()
 	_show_bar(DemoPhase.FIRE)
-	phase_label.text = "Fire — each ship's guns target an enemy (click a foe to retarget); Resolve"
+	phase_label.text = "Fire — click an enemy to target it, toggle guns, then Resolve"
 
 
-## Default each of a ship's mounts to the nearest enemy it bears on (else the
-## nearest enemy at all, so the gun still shows a reason). Deck guns default ON,
-## torpedoes OFF (spending one is a deliberate call).
+## Default a ship's focus to its nearest living enemy; arm every deck gun that
+## bears on it (torpedoes default OFF — spending one is a deliberate call).
 func _build_fire_defaults(ps: ShipState) -> void:
-	var targets: Dictionary = {}
+	var focus := _nearest_enemy(ps)
+	_fire_focus[ps] = focus
+	_fire_choice[ps] = _default_choice(ps, focus)
+
+
+## The deck guns that bear on `focus` (the auto-armed set). Empty when no focus.
+func _default_choice(ps: ShipState, focus: ShipState) -> Array[int]:
 	var choice: Array[int] = []
+	if focus == null:
+		return choice
 	for i in ps.def.gun_mounts.size():
-		var tgt := _best_target_for_mount(ps, i)
-		if tgt == null:
-			continue
-		targets[i] = tgt
-		var pv := ps.fire_preview(i, tgt.hex, engine.terrain)
+		var pv := ps.fire_preview(i, focus.hex, engine.terrain)
 		if pv["bears"] and not pv["is_torpedo"]:
 			choice.append(i)
-	_fire_targets[ps] = targets
-	_fire_choice[ps] = choice
+	return choice
 
 
-func _best_target_for_mount(ps: ShipState, mount: int) -> ShipState:
-	var enemies := engine.living_ships(AI_SIDE)
-	if enemies.is_empty():
-		return null
-	var bearing_best: ShipState = null
-	var bearing_d := 1 << 30
-	var nearest: ShipState = null
-	var nearest_d := 1 << 30
-	for e in enemies:
-		var d := HexMath.distance(ps.hex, e.hex)
-		if d < nearest_d:
-			nearest_d = d
-			nearest = e
-		var pv := ps.fire_preview(mount, e.hex, engine.terrain)
-		if pv["bears"] and d < bearing_d:
-			bearing_d = d
-			bearing_best = e
-	return bearing_best if bearing_best != null else nearest
-
-
-## Builds a toggle per bearing gun (with its shot preview against its current
-## target) and a greyed line per gun that can't fire (with the reason).
+## Builds a toggle per gun that bears on the active ship's focus target, and a
+## greyed line per gun that can't fire (with the reason).
 func _rebuild_fire_bar() -> void:
 	for c in fire_bar.get_children():
 		fire_bar.remove_child(c)   # detach now; queue_free is deferred a frame
 		c.queue_free()
 	var p := _active
-	var targets: Dictionary = _fire_targets.get(p, {})
+	var focus: ShipState = _fire_focus.get(p, null)
 	var choice: Array = _fire_choice.get(p, [])
 	var title := Label.new()
-	title.text = "%s guns:" % p.def.display_name
+	if focus == null:
+		title.text = "%s — no enemy in reach" % p.def.display_name
+		fire_bar.add_child(title)
+		_add_button(fire_bar, "Resolve Fire", _on_resolve_fire)
+		return
+	title.text = "%s -> %s:" % [p.def.display_name, focus.def.display_name]
 	fire_bar.add_child(title)
 	for i in p.def.gun_mounts.size():
 		var label := str(p.def.gun_mounts[i]["label"])
-		var tgt: ShipState = targets.get(i, null)
-		if tgt == null:
-			var nl := Label.new()
-			nl.text = "%s [no target]" % label
-			nl.modulate = Color(0.6, 0.6, 0.6)
-			fire_bar.add_child(nl)
-			continue
-		var pv := p.fire_preview(i, tgt.hex, engine.terrain)
-		var tname := tgt.def.display_name
+		var pv := p.fire_preview(i, focus.hex, engine.terrain)
 		if pv["bears"]:
 			var cb := CheckBox.new()
 			var dust_tag := ""
 			if int(pv.get("dust_penalty", 0)) > 0:
 				dust_tag = " [dust+%d]" % int(pv["dust_penalty"])
-			cb.text = "%s -> %s  rng %d  %d+ -> %d%s" % [
-					label, tname, pv["range"], pv["to_hit"], pv["damage"], dust_tag]
+			cb.text = "%s  rng %d  %d+ -> %d%s" % [
+					label, pv["range"], pv["to_hit"], pv["damage"], dust_tag]
 			if pv["is_torpedo"]:
 				cb.text += "  AP%d  [%d left]" % [pv["armor_piercing"], pv["ammo"]]
 			cb.button_pressed = i in choice
@@ -905,7 +897,7 @@ func _rebuild_fire_bar() -> void:
 			fire_bar.add_child(cb)
 		else:
 			var dl := Label.new()
-			dl.text = "%s -> %s [%s]" % [label, tname, str(pv["reason"])]
+			dl.text = "%s [%s]" % [label, str(pv["reason"])]
 			dl.modulate = Color(0.6, 0.6, 0.6)
 			fire_bar.add_child(dl)
 	_add_button(fire_bar, "Resolve Fire", _on_resolve_fire)
@@ -915,45 +907,41 @@ func _on_fire_toggled() -> void:
 	var typed: Array[int] = []
 	typed.assign(_checked_mounts(fire_bar))
 	_fire_choice[_active] = typed
+	_rebuild_roster()
+
+
+## Make the clicked enemy the active ship's focus target, re-arming the deck guns
+## that bear on it. The reticle and gun list follow.
+func _retarget_active(enemy: ShipState) -> void:
+	var p := _active
+	_fire_focus[p] = enemy
+	_fire_choice[p] = _default_choice(p, enemy)
+	log_box.append_text("%s targets the %s\n" % [p.def.display_name, enemy.def.display_name])
+	_rebuild_fire_bar()
 	_update_fire_markers()
 	_rebuild_roster()
 
 
-## Point every bearing mount of the active ship at the clicked enemy.
-func _retarget_active(enemy: ShipState) -> void:
-	var p := _active
-	var targets: Dictionary = _fire_targets.get(p, {})
-	for i in p.def.gun_mounts.size():
-		if p.fire_preview(i, enemy.hex, engine.terrain)["bears"]:
-			targets[i] = enemy
-	_fire_targets[p] = targets
-	log_box.append_text("%s shifts fire to the %s\n" % [p.def.display_name, enemy.def.display_name])
-	_rebuild_fire_bar()
-	_update_fire_markers()
-
-
-## Draw a reticle on every enemy the active ship's chosen guns are aimed at.
+## Draw a reticle on the active ship's focus target (the enemy it will shoot).
 func _update_fire_markers() -> void:
-	var targets: Dictionary = _fire_targets.get(_active, {})
+	var focus: ShipState = _fire_focus.get(_active, null)
 	var hexes: Array[Vector2i] = []
-	for i in (_fire_choice.get(_active, []) as Array):
-		if targets.has(int(i)):
-			var h: Vector2i = (targets[int(i)] as ShipState).hex
-			if not h in hexes:
-				hexes.append(h)
+	if focus != null:
+		hexes.append(focus.hex)
 	map.set_fire_targets(hexes)
 
 
 func _on_resolve_fire() -> void:
 	if phase != DemoPhase.FIRE:
 		return
-	# Every player ship fires its chosen mounts at their per-mount targets...
+	# Every player ship fires its chosen guns at its focus target...
 	for ps in _players():
-		var targets: Dictionary = _fire_targets.get(ps, {})
+		var focus: ShipState = _fire_focus.get(ps, null)
+		if focus == null or engine.is_out_of_action(focus):
+			continue
 		for i in (_fire_choice.get(ps, []) as Array):
-			var tgt: ShipState = targets.get(int(i), null)
-			if tgt != null and not engine.is_out_of_action(tgt):
-				engine.declare_fire(ps, int(i), tgt)
+			if ps.fire_preview(int(i), focus.hex, engine.terrain)["bears"]:
+				engine.declare_fire(ps, int(i), focus)
 	# ...and every AI ship fires everything bearing at its nearest enemy.
 	for es in engine.living_ships(AI_SIDE):
 		var enemy := _nearest_enemy(es)

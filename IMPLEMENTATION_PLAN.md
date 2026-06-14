@@ -591,58 +591,43 @@ is priced automatically (no hand-tuned number to forget), and the formula is
 design note) — the cost only needs to be monotone in the obvious way (a cruiser
 must cost more than a scout) and stable/deterministic.
 
-- [ ] **`ShipDef.point_cost()` — a derived, non-linear cost.** Add a pure
-	  function on `ShipDef` (no stored magic number; an optional
-	  `@export var point_cost_override` may pin a class later if desired). Sum
-	  three capability scores, then bend the curve:
-	  - **Offensive capacity.** Over every gun mount, value
-		`expected_damage_per_turn × reach × arc_coverage`, where expected damage
-		uses the `GunDef` range brackets (`damage` weighted by `to_hit`
-		probability), divided by `reload_turns` (a heavy that fires every third
-		turn is worth less per turn than its single-shot punch), times the arc
-		count (a broadside-and-bow gun is worth more than a fixed bow gun).
-		**Torpedoes** price their burst specially: `is_torpedo` × `armor_piercing`
-		(AP defeats the armor term entirely, so it is valued at full damage) ×
-		finite `ammo` (a 3-shot rack is a fraction of an infinite gun's
-		sustained value, but its alpha strike is weighted up).
-	  - **Damage absorption.** Total `armor` across facings (this is what makes a
-		cruiser expensive), plus buoyancy-tank count (effective hit points before
-		grounding) and the key internals (`ENGINE`, `BRIDGE`, `CREW`,
-		`DAMAGE_CONTROL`) that keep capability online. `MAGAZINE` is a *liability*
-		term (explosion risk) — it may shave cost slightly rather than add.
-	  - **Other metrics.** Mobility and command: `base_max_speed` and
-		`speed_per_engine_crew` (a flyer that can both run fast *and* fight is
-		dear), turn quality from `turn_mode_by_speed` (lower = nimbler = costlier),
-		`PROPELLER`/`RUDDER` boxes, and `CREW` pool size (it powers everything via
-		allocation).
-	  - **Non-linearity (the point of "need not be linear").** Apply convex
-		scaling so concentrated power costs a premium: e.g. raise the offensive
-		and defensive subtotals to an exponent >1 (or add a quadratic cross-term
-		`offense × defense` — a ship that hits hard *and* survives is worth more
-		than the sum, the classic glass-cannon-vs-brick asymmetry). This makes one
-		cruiser cost *more* than the two scouts whose stats it dominates, which is
-		the intended buy-decision tension. Document the exact weights/exponents
-		inline as tunables (a `const` weight block), since this phase's job is the
-		*mechanism*, not the values.
-- [ ] **`FleetBuilder` (rules/, headless).** A pure helper:
-	  `available_classes()` (ids + `display_name` + `point_cost`), validate a
-	  roster against a budget (`total_cost ≤ budget`), and **AI roster
-	  generation** — greedily/randomly fill a budget from the catalog (seeded RNG
-	  for reproducibility) so the computer fields a points-matched fleet. No UI,
-	  no rendering — tests and the AI driver both call it.
-- [ ] **Fleet-builder screen (`ui/`).** A pre-battle scenario screen reachable
-	  from `main_menu` (and the game-over "rematch" path): pick a points budget,
-	  add/remove hulls for the player side with a live "X / budget spent"
-	  readout and the per-class `point_cost` shown on each card; the engine builds
-	  the AI's roster via `FleetBuilder` to the same budget. "Launch" hands the
-	  two rosters to `TurnEngine.setup(fleets)` (F1). Keep a "Quick Battle"
-	  shortcut that skips the builder with a default fleet so the fast path
-	  survives.
-- [ ] **Tests.** `point_cost()` determinism and ordering (cruiser > scout;
-	  adding a gun/armor raises cost; the non-linear term makes one strong hull
-	  cost more than two weak hulls summing to the same raw stats); `FleetBuilder`
-	  budget validation (rejects over-budget rosters) and seeded AI roster
-	  generation (deterministic, within budget, non-empty).
+- [x] **`ShipDef.point_cost()` — a derived, non-linear cost.** Pure function on
+	  `ShipDef` (plus an `@export var point_cost_override` that pins a class when
+	  ≥0). Sums three subtotals from a documented `const COST` tunable block:
+	  - **Offence** — per mount, mean expected damage across the `GunDef` range
+		brackets (`damage` × P(roll ≥ `to_hit`)) × reach (`max_range`) × arc count
+		÷ `(reload_turns+1)`. Torpedoes are valued by an `ap_bonus` (AP defeats the
+		armour term) × a finite-ammo discount `ammo/(ammo+ammo_half)`.
+	  - **Defence** — `armor` sum + buoyancy tanks + the key internals (ENGINE,
+		BRIDGE, CREW, DAMAGE_CONTROL); MAGAZINE carries a *negative* weight
+		(explosion liability).
+	  - **Mobility/command** — `base_max_speed`, `speed_per_engine_crew`, turn
+		nimbleness (`turn_base − avg turn_mode`), PROPELLER+RUDDER, CREW pool.
+	  - **Non-linearity** — convex exponents (1.2) on the offence/defence
+		subtotals + a `cross` offence×defence term, so concentrated power costs a
+		premium. Derived costs: one-man 25 < scout 47 < cruiser 90 < battleship
+		160; a doubled hull costs >2× its half (tested).
+- [x] **`FleetBuilder` (rules/, headless).** `rules/fleet_builder.gd`:
+	  `available_classes()` (id + `display_name` + `point_cost`), `roster_cost`,
+	  `is_valid(roster, budget)` (non-empty AND within budget), `cheapest_cost`,
+	  and `generate_roster(budget, rng)` — greedily-randomly buys affordable hulls
+	  from the catalog under a seeded RNG (deterministic, within budget, non-empty
+	  with a cheapest-hull fallback). Backed by `ShipLibrary.ship_ids()`.
+- [x] **Fleet-builder screen (`ui/`).** `ui/fleet_builder_screen.gd`+`.tscn`,
+	  reachable from `main_menu` ("Build Fleet"). Budget stepper, a hull catalog
+	  with per-class cost + Add, your-roster list with Remove and a live
+	  "Spent: X / budget" readout (red when over), and an auto-generated enemy
+	  roster preview regenerated to the same budget. "Launch" (gated on a valid
+	  roster) hands both rosters to the map via `BattleConfig`; `map_demo` lays
+	  them out with `setup_rosters`. "Quick Battle" / "Quick Engagement" clears
+	  `BattleConfig` and boots the default 2v2 (the fast path survives).
+- [x] **Tests.** A **Points-buy fleets** suite (16 assertions): `point_cost`
+	  determinism + monotone ordering (one-man<scout<cruiser<battleship), adding a
+	  gun/armour raises cost, the non-linear term makes one strong hull cost more
+	  than two half-hulls of the same summed raw stats, override pins; `FleetBuilder`
+	  catalog/`roster_cost`/`is_valid` (rejects over-budget and empty), and seeded
+	  `generate_roster` (deterministic, within budget, non-empty + tiny-budget
+	  fallback).
 
 ## 6. Working agreements for Claude Code sessions
 

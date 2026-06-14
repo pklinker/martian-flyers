@@ -10,6 +10,7 @@ const SCOUT := Color(0.16, 0.32, 0.62)    # matches HexMapView SIDE_COLORS[0]
 const CRUISER := Color(0.62, 0.16, 0.13)  # matches HexMapView SIDE_COLORS[1]
 
 const GAME_SCENE := "res://ui/map_demo.tscn"
+const FLEET_SCENE := "res://ui/fleet_builder_screen.tscn"
 
 
 func _ready() -> void:
@@ -46,7 +47,8 @@ func _build_ui() -> void:
 	gap.custom_minimum_size = Vector2(0, 36)
 	col.add_child(gap)
 
-	_add_menu_button(col, "Start Engagement", _on_start)
+	_add_menu_button(col, "Build Fleet", _on_build_fleet)
+	_add_menu_button(col, "Quick Engagement", _on_start)
 	_add_menu_button(col, "Quit", _on_quit)
 
 
@@ -59,7 +61,12 @@ func _add_menu_button(parent: Control, label: String, handler: Callable) -> void
 	parent.add_child(b)
 
 
+func _on_build_fleet() -> void:
+	get_tree().change_scene_to_file(FLEET_SCENE)
+
+
 func _on_start() -> void:
+	BattleConfig.clear()   # Quick Engagement always uses the map's default 2v2
 	get_tree().change_scene_to_file(GAME_SCENE)
 
 
