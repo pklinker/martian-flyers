@@ -47,7 +47,7 @@ var game_over_detail: Label
 var roster_bar: HBoxContainer
 
 # Phase bars (only one visible at a time, beneath the persistent top bar).
-var alloc_bar: VBoxContainer
+var alloc_bar: VBoxContainer     # Crew row on top, Stats + Action row below
 var plot_bar: HBoxContainer
 var fire_bar: HBoxContainer
 
@@ -68,7 +68,8 @@ var lookout_label: Label          # null when no dust on the field
 var crew_label: Label
 var confirm_btn: Button           # commit the active ship's crew plan
 var alloc_proceed_btn: Button     # leave ALLOCATE; gated on every ship committed
-var alloc_guns_row: HBoxContainer
+var alloc_guns_row: Control      # holds the ALLOCATE gun toggles
+var fire_guns_row: Control       # holds the FIRE gun toggles
 
 # Per-ship phase state, keyed by ShipState.
 var _alloc: Dictionary = {}       # ship -> { guns:Array, engine, dc, lookout, committed }
@@ -92,50 +93,64 @@ func _ready() -> void:
 # ---------------------------------------------------------------------------
 
 func _build_ui() -> void:
+	# Full-screen vertical manager: glass top HUD, the hex map (expands), glass
+	# bottom message bar. Zero separation — each band's own panel border is the gap.
 	var root := VBoxContainer.new()
 	root.set_anchors_preset(Control.PRESET_FULL_RECT)
-	root.add_theme_constant_override("separation", 6)
+	root.add_theme_constant_override("separation", 0)
 	add_child(root)
 
-	# Persistent top bar: phase prompt + SSD toggle + New Game.
-	var top := HBoxContainer.new()
-	top.add_theme_constant_override("separation", 8)
-	root.add_child(top)
-	phase_label = Label.new()
-	phase_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	top.add_child(phase_label)
-	ssd_toggle_btn = _add_button(top, "Hide Ships", _toggle_ssd)
-	_add_button(top, "Recenter", _on_recenter)
-	_add_button(top, "Save", _on_save)
-	_add_button(top, "Load", _on_load)
-	_add_button(top, "New Game", _new_game)
-	_add_button(top, "Menu", _on_quit_to_menu)
+	# ---- TOP HUD: a glass PanelContainer holding three stacked rows. ----------
+	var top_panel := PanelContainer.new()
+	top_panel.add_theme_stylebox_override("panel", UiTheme.hud_style(12))
+	root.add_child(top_panel)
+	var top_v := VBoxContainer.new()
+	top_v.add_theme_constant_override("separation", 8)
+	top_panel.add_child(top_v)
 
-	# Roster strip: which of your ships the phase bar is editing.
+	# Row 1: phase instruction (left) + a unified system button bank (right).
+	var row1 := HBoxContainer.new()
+	row1.add_theme_constant_override("separation", 8)
+	top_v.add_child(row1)
+	phase_label = UiTheme.label("", UiTheme.COL_TEXT, 16)
+	phase_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	phase_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row1.add_child(phase_label)
+	# System bank: view ops grouped, then "leave" actions styled apart (warn).
+	ssd_toggle_btn = _add_button(row1, "Hide Ships", _toggle_ssd, "system")
+	_add_button(row1, "Recenter", _on_recenter, "system")
+	_add_button(row1, "Save", _on_save, "system")
+	_add_button(row1, "Load", _on_load, "system")
+	_add_button(row1, "New Game", _new_game, "warn")
+	_add_button(row1, "Menu", _on_quit_to_menu, "warn")
+
+	# Row 2: "Your ships" fleet tabs.
 	roster_bar = HBoxContainer.new()
 	roster_bar.add_theme_constant_override("separation", 6)
-	root.add_child(roster_bar)
+	top_v.add_child(roster_bar)
 
-	# ALLOCATE bar (two-row VBox: gun checkboxes above, steppers below).
+	# Row 3: the active phase's configuration bar (only one shown at a time).
+	# A VBox: the Crew toggles get their own full-width row, with the Stats and
+	# Action sub-panels on a second row beneath them.
 	alloc_bar = VBoxContainer.new()
-	alloc_bar.add_theme_constant_override("separation", 3)
-	root.add_child(alloc_bar)
+	alloc_bar.add_theme_constant_override("separation", 8)
+	top_v.add_child(alloc_bar)
 
-	# PLOT bar (static).
 	plot_bar = HBoxContainer.new()
 	plot_bar.add_theme_constant_override("separation", 8)
-	root.add_child(plot_bar)
-	spd_dn = _add_button(plot_bar, "Spd -", _on_speed.bind(-1))
-	speed_label = Label.new()
+	top_v.add_child(plot_bar)
+	spd_dn = _add_button(plot_bar, "Speed –", _on_speed.bind(-1), "stepper")
+	speed_label = UiTheme.label("", UiTheme.COL_TEXT, 15, true)
+	speed_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	plot_bar.add_child(speed_label)
-	spd_up = _add_button(plot_bar, "Spd +", _on_speed.bind(1))
-	begin_btn = _add_button(plot_bar, "Begin Movement", _on_begin_movement)
+	spd_up = _add_button(plot_bar, "Speed +", _on_speed.bind(1), "stepper")
+	begin_btn = _add_button(plot_bar, "Begin Movement  ▶", _on_begin_movement, "primary")
 
-	# FIRE bar (contents rebuilt each fire phase from the shot previews).
 	fire_bar = HBoxContainer.new()
-	fire_bar.add_theme_constant_override("separation", 6)
-	root.add_child(fire_bar)
+	fire_bar.add_theme_constant_override("separation", 8)
+	top_v.add_child(fire_bar)
 
+	# ---- CENTER: the hex map, untouched, expands to fill. ---------------------
 	map = HexMapView.new()
 	map.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	map.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -147,10 +162,23 @@ func _build_ui() -> void:
 	sound = SoundBank.new()
 	add_child(sound)
 
+	# ---- BOTTOM message bar: a glass footer with comfortable padding. ---------
+	var bottom_panel := PanelContainer.new()
+	bottom_panel.add_theme_stylebox_override("panel", UiTheme.hud_style(6))
+	root.add_child(bottom_panel)
+	var bottom_margin := MarginContainer.new()
+	for s in ["left", "right"]:
+		bottom_margin.add_theme_constant_override("margin_" + s, 12)
+	for s in ["top", "bottom"]:
+		bottom_margin.add_theme_constant_override("margin_" + s, 4)
+	bottom_panel.add_child(bottom_margin)
 	log_box = RichTextLabel.new()
-	log_box.custom_minimum_size = Vector2(0, 120)
+	log_box.custom_minimum_size = Vector2(0, 96)
 	log_box.scroll_following = true
-	root.add_child(log_box)
+	log_box.bbcode_enabled = false
+	log_box.add_theme_color_override("default_color", UiTheme.COL_MUTED)
+	log_box.add_theme_font_size_override("normal_font_size", 13)
+	bottom_margin.add_child(log_box)
 
 	_build_ssd_overlay()
 	_build_game_over_overlay()
@@ -162,6 +190,7 @@ func _build_ui() -> void:
 ## per game in _build_ssd_panels (the fleet size is known only once the engine is).
 func _build_ssd_overlay() -> void:
 	ssd_overlay = Panel.new()
+	ssd_overlay.add_theme_stylebox_override("panel", UiTheme.panel_style(8))
 	ssd_overlay.anchor_left = 1.0
 	ssd_overlay.anchor_right = 1.0
 	ssd_overlay.anchor_top = 0.0
@@ -184,11 +213,10 @@ func _build_ssd_overlay() -> void:
 
 	var header := HBoxContainer.new()
 	col.add_child(header)
-	var title := Label.new()
-	title.text = "SHIP DISPLAYS"
+	var title := UiTheme.label("SHIP DISPLAYS", UiTheme.COL_ACCENT, 15, true)
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	header.add_child(title)
-	_add_button(header, "Close", _toggle_ssd)
+	_add_button(header, "Close", _toggle_ssd, "system")
 
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -236,6 +264,7 @@ func _on_recenter() -> void:
 ## Centered modal shown when the game ends; hidden at new-game start.
 func _build_game_over_overlay() -> void:
 	game_over_overlay = Panel.new()
+	game_over_overlay.add_theme_stylebox_override("panel", UiTheme.panel_style(20))
 	game_over_overlay.anchor_left = 0.5
 	game_over_overlay.anchor_right = 0.5
 	game_over_overlay.anchor_top = 0.5
@@ -258,12 +287,11 @@ func _build_game_over_overlay() -> void:
 	col.add_theme_constant_override("separation", 10)
 	pad.add_child(col)
 
-	game_over_title = Label.new()
+	game_over_title = UiTheme.label("", UiTheme.COL_TEXT, 28, true)
 	game_over_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	game_over_title.add_theme_font_size_override("font_size", 26)
 	col.add_child(game_over_title)
 
-	game_over_detail = Label.new()
+	game_over_detail = UiTheme.label("", UiTheme.COL_MUTED, 14)
 	game_over_detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	game_over_detail.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	col.add_child(game_over_detail)
@@ -272,13 +300,12 @@ func _build_game_over_overlay() -> void:
 	spacer.custom_minimum_size = Vector2(0, 12)
 	col.add_child(spacer)
 
-	_add_button(col, "Play Again", _new_game)
-	_add_button(col, "Main Menu", _on_quit_to_menu)
+	_add_button(col, "Play Again", _new_game, "primary")
+	_add_button(col, "Main Menu", _on_quit_to_menu, "system")
 
 
-func _add_button(parent: Control, label: String, handler: Callable) -> Button:
-	var b := Button.new()
-	b.text = label
+func _add_button(parent: Control, label: String, handler: Callable, kind := "neutral") -> Button:
+	var b := UiTheme.button(label, kind)
 	b.pressed.connect(handler)
 	parent.add_child(b)
 	return b
@@ -424,14 +451,12 @@ func _rebuild_roster() -> void:
 	for c in roster_bar.get_children():
 		roster_bar.remove_child(c)
 		c.queue_free()
-	var title := Label.new()
-	title.text = "Your ships:"
+	var title := UiTheme.label("YOUR SHIPS", UiTheme.COL_MUTED, 13)
+	title.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	roster_bar.add_child(title)
 	for ps in _players():
-		var b := Button.new()
-		b.text = _roster_label(ps)
-		if ps == _active:
-			b.add_theme_color_override("font_color", Color(0.95, 0.75, 0.15))
+		# The active ship gets the prominent accent tab; the rest are dim but live.
+		var b := UiTheme.tab(_roster_label(ps), ps == _active)
 		var target := ps
 		b.pressed.connect(func() -> void: _select_ship(target))
 		roster_bar.add_child(b)
@@ -439,15 +464,14 @@ func _rebuild_roster() -> void:
 
 func _roster_label(ps: ShipState) -> String:
 	var disp := ps.def.display_name
-	var mark := "> " if ps == _active else "  "
 	match phase:
 		DemoPhase.ALLOCATE:
 			var done := _alloc.has(ps) and bool(_alloc[ps].get("committed", false))
-			return "%s%s %s" % [mark, disp, "[ready]" if done else ""]
+			return "%s%s" % [disp, "  ✓" if done else ""]
 		DemoPhase.PLOT:
-			return "%s%s (spd %d)" % [mark, disp, ps.speed]
+			return "%s  ·  spd %d" % [disp, ps.speed]
 		DemoPhase.FIRE:
-			return "%s%s (%d guns)" % [mark, disp, _fire_choice.get(ps, []).size()]
+			return "%s  ·  %d guns" % [disp, _fire_choice.get(ps, []).size()]
 		_:
 			return disp
 
@@ -563,69 +587,76 @@ func _rebuild_alloc_bar() -> void:
 	var p := _active
 	var picked: Array = _alloc[p]["guns"]
 
-	# Row 1: gun checkboxes.
-	var guns_row := HBoxContainer.new()
-	guns_row.add_theme_constant_override("separation", 6)
-	alloc_bar.add_child(guns_row)
-	alloc_guns_row = guns_row
-
-	var title := Label.new()
-	title.text = "Crew:"
-	guns_row.add_child(title)
-
+	# --- WEAPONS row: one toggle per gun mount, laid out horizontally on its own
+	#     full-width line above the Crew/Action row. -----------------------------
+	var crew_hb := _sub_panel("WEAPONS", alloc_bar)
+	var guns := HBoxContainer.new()
+	guns.add_theme_constant_override("separation", 6)
+	crew_hb.add_child(guns)
+	alloc_guns_row = guns
 	for i in p.def.gun_mounts.size():
 		var mount: Dictionary = p.def.gun_mounts[i]
 		if p.gun_states[i]["destroyed"]:
-			var dl := Label.new()
-			dl.text = "%s [destroyed]" % str(mount["label"])
-			dl.modulate = Color(0.6, 0.6, 0.6)
-			guns_row.add_child(dl)
+			guns.add_child(UiTheme.label("%s ✕" % str(mount["label"]), UiTheme.COL_WARN.darkened(0.1), 12))
 			continue
 		var gun: GunDef = ShipLibrary.gun(mount["gun_id"])
-		var cb := CheckBox.new()
-		cb.text = "%s (%d)" % [str(mount["label"]), gun.crew_required]
-		cb.button_pressed = i in picked
-		cb.set_meta("mount", i)
-		cb.toggled.connect(func(_on: bool) -> void: _edit_alloc())
-		guns_row.add_child(cb)
+		var t := UiTheme.toggle("%s (%d)" % [str(mount["label"]), gun.crew_required])
+		t.button_pressed = i in picked
+		t.set_meta("mount", i)
+		t.toggled.connect(func(_on: bool) -> void: _edit_alloc())
+		guns.add_child(t)
 
-	# Row 2: engine/DC/lookout steppers, budget label, commit + proceed.
-	var ctrl_row := HBoxContainer.new()
-	ctrl_row.add_theme_constant_override("separation", 6)
-	alloc_bar.add_child(ctrl_row)
+	# --- Second row: Stats and Action sub-panels side by side. ----------------
+	var lower := HBoxContainer.new()
+	lower.add_theme_constant_override("separation", 10)
+	alloc_bar.add_child(lower)
 
-	var eng_title := Label.new()
-	eng_title.text = "Engine:"
-	ctrl_row.add_child(eng_title)
-	_add_button(ctrl_row, "-", _eng.bind(-1))
-	engine_label = Label.new()
-	ctrl_row.add_child(engine_label)
-	_add_button(ctrl_row, "+", _eng.bind(1))
+	var stats_hb := _sub_panel("CREW", lower)
+	stats_hb.add_theme_constant_override("separation", 18)   # space the stepper groups apart
+	engine_label = _stepper_group(stats_hb, "ENGINE", _eng)
+	dc_label = _stepper_group(stats_hb, "DC", _dc)
+	lookout_label = _stepper_group(stats_hb, "LOOKOUT", _lookout) if _has_dust() else null
 
-	var dc_title := Label.new()
-	dc_title.text = "  DC:"
-	ctrl_row.add_child(dc_title)
-	_add_button(ctrl_row, "-", _dc.bind(-1))
-	dc_label = Label.new()
-	ctrl_row.add_child(dc_label)
-	_add_button(ctrl_row, "+", _dc.bind(1))
+	var act_hb := _sub_panel("", lower)
+	crew_label = UiTheme.label("", UiTheme.COL_TEXT, 14, true)
+	crew_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	act_hb.add_child(crew_label)
+	confirm_btn = _add_button(act_hb, "Commit Ship", _commit_active_alloc, "accent")
+	alloc_proceed_btn = _add_button(act_hb, "Begin Plot  ▶", _begin_plot, "primary")
 
-	# Lookout crew: only shown when there is dust on the field.
-	if _has_dust():
-		var lk_title := Label.new()
-		lk_title.text = "  Lookout:"
-		ctrl_row.add_child(lk_title)
-		_add_button(ctrl_row, "-", _lookout.bind(-1))
-		lookout_label = Label.new()
-		ctrl_row.add_child(lookout_label)
-		_add_button(ctrl_row, "+", _lookout.bind(1))
-	else:
-		lookout_label = null
 
-	crew_label = Label.new()
-	ctrl_row.add_child(crew_label)
-	confirm_btn = _add_button(ctrl_row, "Commit Ship", _commit_active_alloc)
-	alloc_proceed_btn = _add_button(ctrl_row, "Begin Plot", _begin_plot)
+## A bordered sub-section that hugs its content (so panels don't stretch to fill
+## and balloon their buttons). Added to `parent`; returns the inner HBox to fill.
+func _sub_panel(title: String, parent: Container) -> HBoxContainer:
+	var panel := PanelContainer.new()
+	panel.add_theme_stylebox_override("panel", UiTheme.sub_style(8))
+	panel.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN   # hug content, left-align
+	panel.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	var hb := HBoxContainer.new()
+	hb.add_theme_constant_override("separation", 8)
+	hb.alignment = BoxContainer.ALIGNMENT_CENTER
+	panel.add_child(hb)
+	if title != "":
+		hb.add_child(UiTheme.label(title, UiTheme.COL_MUTED, 12))
+	parent.add_child(panel)
+	return hb
+
+
+## A compact [TITLE] [–] value [+] stepper. Returns the value Label so the
+## allocation refresh can update its number.
+func _stepper_group(parent: HBoxContainer, title: String, cb: Callable) -> Label:
+	var g := HBoxContainer.new()
+	g.add_theme_constant_override("separation", 3)
+	g.alignment = BoxContainer.ALIGNMENT_CENTER
+	g.add_child(UiTheme.label(title, UiTheme.COL_MUTED, 12))
+	_add_button(g, "–", cb.bind(-1), "stepper")
+	var val := UiTheme.label("0", UiTheme.COL_POINTS, 15, true)
+	val.custom_minimum_size = Vector2(20, 0)
+	val.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	g.add_child(val)
+	_add_button(g, "+", cb.bind(1), "stepper")
+	parent.add_child(g)
+	return val
 
 
 func _eng(delta: int) -> void:
@@ -871,41 +902,42 @@ func _rebuild_fire_bar() -> void:
 	var p := _active
 	var focus: ShipState = _fire_focus.get(p, null)
 	var choice: Array = _fire_choice.get(p, [])
-	var title := Label.new()
 	if focus == null:
-		title.text = "%s — no enemy in reach" % p.def.display_name
-		fire_bar.add_child(title)
-		_add_button(fire_bar, "Resolve Fire", _on_resolve_fire)
+		fire_bar.add_child(UiTheme.label("%s — no enemy in reach" % p.def.display_name, UiTheme.COL_MUTED, 14))
+		_add_button(fire_bar, "Resolve Fire  ▶", _on_resolve_fire, "primary")
 		return
-	title.text = "%s -> %s:" % [p.def.display_name, focus.def.display_name]
-	fire_bar.add_child(title)
+	# Target header: ship -> focused enemy, the enemy name in accent.
+	fire_bar.add_child(UiTheme.label("%s →" % p.def.display_name, UiTheme.COL_TEXT, 14, true))
+	fire_bar.add_child(UiTheme.label(focus.def.display_name, UiTheme.COL_ACCENT, 14, true))
+	# Bearing guns become toggles; guns that can't fire are dim labels with reason.
+	var guns := HFlowContainer.new()
+	guns.add_theme_constant_override("h_separation", 6)
+	guns.add_theme_constant_override("v_separation", 4)
+	fire_bar.add_child(guns)
+	fire_guns_row = guns
 	for i in p.def.gun_mounts.size():
 		var label := str(p.def.gun_mounts[i]["label"])
 		var pv := p.fire_preview(i, focus.hex, engine.terrain)
 		if pv["bears"]:
-			var cb := CheckBox.new()
 			var dust_tag := ""
 			if int(pv.get("dust_penalty", 0)) > 0:
-				dust_tag = " [dust+%d]" % int(pv["dust_penalty"])
-			cb.text = "%s  rng %d  %d+ -> %d%s" % [
-					label, pv["range"], pv["to_hit"], pv["damage"], dust_tag]
+				dust_tag = " dust+%d" % int(pv["dust_penalty"])
+			var txt := "%s  %d+→%d%s" % [label, pv["to_hit"], pv["damage"], dust_tag]
 			if pv["is_torpedo"]:
-				cb.text += "  AP%d  [%d left]" % [pv["armor_piercing"], pv["ammo"]]
-			cb.button_pressed = i in choice
-			cb.set_meta("mount", i)
-			cb.toggled.connect(func(_on: bool) -> void: _on_fire_toggled())
-			fire_bar.add_child(cb)
+				txt += "  AP%d [%d]" % [pv["armor_piercing"], pv["ammo"]]
+			var t := UiTheme.toggle(txt)
+			t.button_pressed = i in choice
+			t.set_meta("mount", i)
+			t.toggled.connect(func(_on: bool) -> void: _on_fire_toggled())
+			guns.add_child(t)
 		else:
-			var dl := Label.new()
-			dl.text = "%s [%s]" % [label, str(pv["reason"])]
-			dl.modulate = Color(0.6, 0.6, 0.6)
-			fire_bar.add_child(dl)
-	_add_button(fire_bar, "Resolve Fire", _on_resolve_fire)
+			guns.add_child(UiTheme.label("%s · %s" % [label, str(pv["reason"])], UiTheme.COL_MUTED.darkened(0.1), 12))
+	_add_button(fire_bar, "Resolve Fire  ▶", _on_resolve_fire, "primary")
 
 
 func _on_fire_toggled() -> void:
 	var typed: Array[int] = []
-	typed.assign(_checked_mounts(fire_bar))
+	typed.assign(_checked_mounts(fire_guns_row))
 	_fire_choice[_active] = typed
 	_rebuild_roster()
 
@@ -981,11 +1013,12 @@ func _on_hex_clicked(hex: Vector2i) -> void:
 		_retarget_active(s)
 
 
-## Mount indices whose checkbox in `bar` is currently ticked.
+## Mount indices whose toggle in `bar` is currently on (works for any BaseButton
+## carrying a "mount" meta — gun toggles in ALLOCATE and FIRE alike).
 func _checked_mounts(bar: Control) -> Array[int]:
 	var out: Array[int] = []
 	for c in bar.get_children():
-		if c is CheckBox and c.button_pressed and c.has_meta("mount"):
+		if c is BaseButton and c.button_pressed and c.has_meta("mount"):
 			out.append(int(c.get_meta("mount")))
 	return out
 
@@ -1059,14 +1092,17 @@ func _on_game_over(side: int, reason: String) -> void:
 
 	if side == -1:
 		game_over_title.text = "STALEMATE"
+		game_over_title.add_theme_color_override("font_color", UiTheme.COL_POINTS)
 		game_over_detail.text = "Both squadrons are swept from the sky — turn %d\n%s" % [
 				engine.turn_number, reason]
 	elif side == PLAYER_SIDE:
 		game_over_title.text = "VICTORY"
+		game_over_title.add_theme_color_override("font_color", UiTheme.COL_OK)
 		game_over_detail.text = "Your squadron holds the sky — turn %d\n%s" % [
 				engine.turn_number, reason]
 	else:
 		game_over_title.text = "DEFEAT"
+		game_over_title.add_theme_color_override("font_color", UiTheme.COL_WARN)
 		game_over_detail.text = "Your squadron is broken — turn %d\n%s" % [
 				engine.turn_number, reason]
 
