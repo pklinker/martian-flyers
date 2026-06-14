@@ -48,6 +48,16 @@ static func save_to_file(engine: TurnEngine, path: String) -> int:
 	return OK
 
 
+## A deep, independent copy of a live engine — every ShipState, the RNG seed +
+## state, terrain, phase, turn number, and the in-flight movement/fire queues.
+## Reuses the (tested) serialize round-trip, so the clone is guaranteed to match
+## the persistence contract and carries no signal connections — simulating on it
+## fires no UI hooks. The AI's lookahead clones the engine to play candidate
+## turns forward without ever touching live state.
+static func clone(engine: TurnEngine) -> TurnEngine:
+	return dict_to_engine(engine_to_dict(engine))
+
+
 ## Read a save from disk. Returns the restored engine, or null if the file is
 ## missing or corrupt.
 static func load_from_file(path: String) -> TurnEngine:

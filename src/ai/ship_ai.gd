@@ -21,6 +21,30 @@ var doctrine: Dictionary
 var noise := 0.0                       # >0 = sloppier play (easy mode)
 var _rng := RandomNumberGenerator.new()
 
+# --- Lookahead / Monte Carlo (Phase C) ---------------------------------------
+## Number of Monte Carlo rollouts averaged when choosing this turn's plot. 0
+## (default) keeps the fast 1-ply path — `plot` just steps toward the doctrine
+## speed. >0 switches on the seeded-engine lookahead: clone the engine, try each
+## reachable speed, play the turn(s) out with greedy brains, resolve fire on the
+## seeded RNG, and keep the speed with the best expected outcome. A pure
+## difficulty lever — more rollouts + deeper turns = a stronger captain.
+var rollouts := 0
+## How many full turns each rollout simulates before scoring the result. 1 is
+## "shallow lookahead" (this turn's exchange); higher peers further ahead.
+var lookahead_turns := 1
+
+## Value-function weights for scoring a rolled-out state (see `_eval_state`).
+## Internals outweigh armour — armour only delays the first breach, but losing
+## system boxes is what actually kills a flyer — and a decisive result dwarfs
+## any amount of chipped plate.
+const VALUE_ARMOR := 1.0
+const VALUE_SYSTEM := 2.0
+const VALUE_FIRE := 3.0
+const VALUE_WIN := 1000.0
+## A fixed scramble for the Monte Carlo RNG salt (Knuth's multiplicative hash),
+## so repeated rollouts of the same candidate sample different fire outcomes.
+const _MC_SALT := 2654435761
+
 ## Salvo discipline: don't spend a finite torpedo on a shot needing worse than
 ## this on the die. Guns fire freely; torpedoes are hoarded for good odds.
 const TORPEDO_MAX_TO_HIT := 4
@@ -37,6 +61,63 @@ static func for_ship(def: ShipDef) -> ShipAI:
 	var ai := ShipAI.new()
 	ai.doctrine = _doctrine_for(def.id)
 	return ai
+
+
+## Convenience: a lookahead-enabled brain (Phase C) — for_ship() plus the rollout
+## knobs. This is the difficulty lever a menu will eventually set; `p_rollouts`
+## of 0 is exactly the 1-ply brain.
+static func for_ship_with_lookahead(def: ShipDef, p_rollouts: int, p_turns: int = 1) -> ShipAI:
+	var ai := for_ship(def)
+	ai.rollouts = maxi(p_rollouts, 0)
+	ai.lookahead_turns = maxi(p_turns, 1)
+	return ai
+
+
+# ---------------------------------------------------------------------------
+# Difficulty: the two wired levers (evaluator noise + lookahead depth) bundled
+# into the three ranks the menu offers. PADWAR sandbags with sloppy positioning;
+# DWAR is the clean 1-ply captain; ODWAR runs the seeded-engine rollouts. Held
+# here (not in the UI) so the knob mapping lives with the brain it configures.
+# ---------------------------------------------------------------------------
+
+enum Difficulty { PADWAR, DWAR, ODWAR }
+
+## Easy mode's positional sloppiness — the spread on the move-scoring noise. Big
+## enough to visibly drift the kiter out of its band and mis-present facings.
+const PADWAR_NOISE := 2.5
+## Hard mode's rollout budget: plays each candidate plot forward this many times
+## on the seeded engine and averages the outcome. Kept shallow (one turn) so the
+## enemy never stalls the player's turn.
+const ODWAR_ROLLOUTS := 3
+
+## Build the enemy brain for a chosen difficulty rank. Unknown levels fall back
+## to DWAR, the balanced default.
+static func for_difficulty(def: ShipDef, level: int) -> ShipAI:
+	match level:
+		Difficulty.PADWAR:
+			var ai := for_ship(def)
+			ai.noise = PADWAR_NOISE
+			return ai
+		Difficulty.ODWAR:
+			return for_ship_with_lookahead(def, ODWAR_ROLLOUTS, 1)
+		_:
+			return for_ship(def)
+
+
+## Short rank name for the difficulty selector.
+static func difficulty_name(level: int) -> String:
+	match level:
+		Difficulty.PADWAR: return "Padwar"
+		Difficulty.ODWAR:  return "Odwar"
+		_:                 return "Dwar"
+
+
+## One-line flavour blurb shown under the selector.
+static func difficulty_blurb(level: int) -> String:
+	match level:
+		Difficulty.PADWAR: return "Green officers — eager, but their fire wanders."
+		Difficulty.ODWAR:  return "Warlords who weigh every plot before they commit."
+		_:                 return "Seasoned line captains who hold their doctrine."
 
 
 ## Per-class doctrine. Kiters want the outer edge of their gun reach and fear
@@ -146,9 +227,16 @@ func allocate(engine: TurnEngine, s: ShipState) -> void:
 	s.apply_allocation({ "guns": picks, "engine": eng, "damage_control": left + dc_reserve })
 
 
-## PLOT: step speed toward the doctrine target, bounded by acceleration and the
-## crew-gated usable speed.
+## PLOT: choose this turn's speed. With lookahead off (the default) step toward
+## the doctrine target, bounded by acceleration and the crew-gated usable speed.
+## With lookahead on, let the seeded-engine rollout pick the best reachable speed
+## (it falls back to the 1-ply step when there's no enemy to plan against).
 func plot(engine: TurnEngine, s: ShipState) -> void:
+	if rollouts > 0:
+		var chosen := _plot_by_lookahead(engine, s)
+		if chosen >= 0:
+			s.speed = chosen
+			return
 	var enemy := _enemy(engine, s)
 	var dv := s.max_speed_change()
 	var delta: int = clampi(_desired_speed(s, enemy) - s.speed, -dv, dv)
@@ -197,6 +285,152 @@ func choose_fire(s: ShipState, enemy: ShipState, terrain: Dictionary = {}) -> Ar
 				continue   # the facing is soft — let the deck guns do it, save the fish
 		out.append(i)
 	return out
+
+
+# ---------------------------------------------------------------------------
+# Lookahead / Monte Carlo (Phase C)
+#
+# When `rollouts > 0`, the plot is chosen by simulation rather than the 1-ply
+# heuristic: clone the seeded engine, fix our speed to a candidate, fly everyone
+# (us included, on subsequent impulses/turns) with cheap greedy brains, resolve
+# real fire, and score the resulting state. Averaging over `rollouts` RNG-salted
+# plays turns the chance of the dice into an expected value, so the captain
+# commits to the speed that pays off across the likely fights, not just the one
+# the heuristic's positional proxies favour.
+# ---------------------------------------------------------------------------
+
+## Choose this turn's speed by rollout: for every speed reachable this turn
+## (bounded by acceleration and the crew-gated ceiling), clone the engine, fix
+## our speed, let greedy brains fly everyone else, play the turn(s) out, and keep
+## the speed with the best state value averaged over `rollouts` seeded plays.
+## Returns -1 when there's no enemy to plan against (caller uses the 1-ply path).
+func _plot_by_lookahead(engine: TurnEngine, s: ShipState) -> int:
+	var enemy := _enemy(engine, s)
+	if enemy == null:
+		return -1
+	var my_index := engine.ships.find(s)
+	if my_index < 0:
+		return -1
+	var cap := s.usable_max_speed()
+	var dv := s.max_speed_change()
+	var lo: int = clampi(s.speed - dv, 0, cap)
+	var hi: int = clampi(s.speed + dv, 0, cap)
+	var trials: int = maxi(rollouts, 1)
+	var best_speed := s.speed
+	var best_score := -INF
+	for cand in range(lo, hi + 1):
+		var total := 0.0
+		for r in trials:
+			total += _rollout_value(engine, my_index, cand, r)
+		var avg := total / float(trials)
+		if avg > best_score:
+			best_score = avg
+			best_speed = cand
+	return best_speed
+
+
+## One rollout: clone the engine, set our ship to `cand_speed`, plot the others
+## with greedy brains, then play `lookahead_turns` turns to completion and score
+## the result from our side's perspective. `salt` perturbs the clone's RNG so
+## repeated rollouts sample different fire outcomes (Monte Carlo); a single
+## rollout uses the live seed unchanged, so lookahead is then fully deterministic.
+func _rollout_value(engine: TurnEngine, my_index: int, cand_speed: int, salt: int) -> float:
+	var sim := SaveGame.clone(engine)
+	if rollouts > 1:
+		sim.rng.seed = sim.rng.seed + salt * _MC_SALT
+	var me: ShipState = sim.ships[my_index]
+	var brains := _greedy_brains(sim)
+	# The opponents (and us, on later impulses) fly greedily; only this turn's
+	# speed for our hull is the candidate under test.
+	for o in sim.ships:
+		if o != me and not sim.is_out_of_action(o):
+			brains[o].plot(sim, o)
+	me.speed = clampi(cand_speed, 0, me.usable_max_speed())
+	_drive_movement_fire_upkeep(sim, brains)
+	for _t in range(lookahead_turns - 1):
+		if sim.phase == TurnEngine.Phase.GAME_OVER:
+			break
+		_drive_full_turn(sim, brains)
+	return _eval_state(sim, me.side)
+
+
+## Score a (rolled-out) engine state from `side`'s perspective: our remaining
+## fighting strength minus the enemy's, plus a decisive bonus when the battle has
+## actually been won or lost. Higher is better for `side`.
+func _eval_state(engine: TurnEngine, side: int) -> float:
+	var mine := 0.0
+	var theirs := 0.0
+	for s in engine.ships:
+		var strength := _ship_strength(s)
+		if s.side == side:
+			mine += strength
+		else:
+			theirs += strength
+	var score := mine - theirs
+	if engine.phase == TurnEngine.Phase.GAME_OVER:
+		score += VALUE_WIN if engine.side_alive(side) else -VALUE_WIN
+	return score
+
+
+## A scalar "fighting strength" for one hull: surviving armour and system boxes,
+## docked for active fires. An out-of-action hull is worth nothing.
+func _ship_strength(s: ShipState) -> float:
+	if s.is_destroyed or s.grounded or s.crew_pool() == 0:
+		return 0.0
+	var v := 0.0
+	for a in s.armor_remaining:
+		v += float(a) * VALUE_ARMOR
+	for t in s.systems_remaining:
+		v += float(s.systems_remaining[t]) * VALUE_SYSTEM
+	return v - float(s.fires) * VALUE_FIRE
+
+
+## A fast 1-ply ShipAI for every hull in a (cloned) engine — the opponent model
+## a rollout flies. Keyed by ShipState, matching the demo/test driver shape.
+static func _greedy_brains(engine: TurnEngine) -> Dictionary:
+	var brains := {}
+	for s in engine.ships:
+		brains[s] = ShipAI.for_ship(s.def)
+	return brains
+
+
+## Drive a cloned engine from a speeds-set state through end-of-turn: run the
+## 8-impulse movement with each brain's choose_move, declare and resolve the
+## simultaneous fire, then upkeep. Mirrors the production loop (demo, tests) so a
+## rollout plays exactly the game it is predicting.
+static func _drive_movement_fire_upkeep(engine: TurnEngine, brains: Dictionary) -> void:
+	engine.begin_movement()
+	while true:
+		var mover := engine.next_mover()
+		if mover == null:
+			break
+		var moves := engine.legal_moves_for(mover)
+		if not moves.is_empty():
+			engine.execute_move(mover, brains[mover].choose_move(engine, mover, moves))
+	for s in engine.ships:
+		if engine.is_out_of_action(s):
+			continue
+		var enemy: ShipState = brains[s]._enemy(engine, s)
+		if enemy == null:
+			continue
+		for mi in brains[s].choose_fire(s, enemy, engine.terrain):
+			engine.declare_fire(s, mi, enemy)
+	engine.resolve_fire_phase()
+	if engine.phase != TurnEngine.Phase.GAME_OVER:
+		engine.run_upkeep()
+
+
+## Drive a full turn on a cloned engine: allocate + plot every living hull with
+## its greedy brain, then movement/fire/upkeep. Used for the 2nd..Nth turns of a
+## multi-turn rollout (the greedy brains have rollouts == 0, so no recursion).
+static func _drive_full_turn(engine: TurnEngine, brains: Dictionary) -> void:
+	for s in engine.ships:
+		if not engine.is_out_of_action(s):
+			brains[s].allocate(engine, s)
+	for s in engine.ships:
+		if not engine.is_out_of_action(s):
+			brains[s].plot(engine, s)
+	_drive_movement_fire_upkeep(engine, brains)
 
 
 # ---------------------------------------------------------------------------

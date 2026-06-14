@@ -66,7 +66,7 @@ Key structural decisions already in force:
 
 | File | Contents | State |
 |---|---|---|
-| `ship_ai.gd` | `ShipAI` — a doctrine-driven opponent and pure client of the engine. Per-class doctrine weight table (`for_ship`, with entries for all four classes); one-ply positional utility evaluator `_eval_position` (range-band fit, own guns bearing, enemy guns denied, weak-facing protection, **armour awareness**: `w_penetrate` aims at the enemy's thinnest/already-breached facing — since internals only flow once a facing is stripped — and `w_hole` refuses to present an own holed facing); per-turn `allocate` (engine crew for desired speed → **a hand reserved per active fire** → guns → DC), `plot`, `choose_move` (best resulting position), `choose_fire` (**every bearing deck gun — chipping armour is never wasted**; a finite **torpedo only on ≤4 to-hit AND against hard armour ≥3** — once a facing is breached the deck guns exploit it for free, so the AP fish is hoarded for plating they can't crack). `allocate` **mans a torpedo tube first when the enemy is within reach** (the scout's main punch earns crew before the deck guns). `noise` hook + per-class weights = difficulty lever; deeper lookahead/Monte-Carlo is future | Done, tested |
+| `ship_ai.gd` | `ShipAI` — a doctrine-driven opponent and pure client of the engine. Per-class doctrine weight table (`for_ship`, with entries for all four classes); one-ply positional utility evaluator `_eval_position` (range-band fit, own guns bearing, enemy guns denied, weak-facing protection, **armour awareness**: `w_penetrate` aims at the enemy's thinnest/already-breached facing — since internals only flow once a facing is stripped — and `w_hole` refuses to present an own holed facing); per-turn `allocate` (engine crew for desired speed → **a hand reserved per active fire** → guns → DC), `plot`, `choose_move` (best resulting position), `choose_fire` (**every bearing deck gun — chipping armour is never wasted**; a finite **torpedo only on ≤4 to-hit AND against hard armour ≥3** — once a facing is breached the deck guns exploit it for free, so the AP fish is hoarded for plating they can't crack). `allocate` **mans a torpedo tube first when the enemy is within reach** (the scout's main punch earns crew before the deck guns). `noise` hook + per-class weights = difficulty lever. **Opt-in seeded-engine lookahead** (`rollouts`/`lookahead_turns`, default 0 = the 1-ply fast path; `for_ship_with_lookahead`): `plot` clones the engine (`SaveGame.clone`), plays each reachable speed forward with greedy brains through real movement+fire+upkeep, and keeps the speed with the best averaged state value (`_eval_state` = own−enemy strength + decisive bonus; Monte-Carlo salting over the dice) — deeper lookahead is the difficulty depth lever | Done, tested |
 
 ### tests/
 
@@ -260,12 +260,35 @@ ship directly at its per-class falling line. See GAME_DESIGN.md §2/§3.)*
 	  Scan after the change: **scout 8% / cruiser 92%, ~0.5% timeout, avg ~10
 	  turns** (cruiser still rightly dominant; the scout is a slightly bigger
 	  threat for spending torpedoes more wisely). 5 new assertions.
-- [ ] Use the seeded engine for shallow lookahead / Monte Carlo rollouts
-	  (clone `ShipState`s, simulate candidate plots, score). *Framework is ready
-	  (the `noise` hook + cloneable state); the 1-ply evaluator above is what's
-	  built.*
-- [ ] Difficulty levels = evaluator weights + lookahead depth. *Weights are
-	  per-class data and `noise` is wired; presets/menu not yet exposed.*
+- [x] **Seeded-engine lookahead / Monte Carlo rollouts.** `SaveGame.clone()`
+	  gives a deep, signal-free engine copy (the tested serialize round-trip) that
+	  reproduces the RNG sequence, so a simulated turn rolls the same dice the real
+	  one would. `ShipAI` gains an opt-in rollout layer (`rollouts` /
+	  `lookahead_turns`, default 0 = the unchanged 1-ply fast path): when on,
+	  `plot` clones the engine, tries every speed reachable this turn, flies
+	  everyone with cheap greedy brains through real movement+fire+upkeep
+	  (`_drive_movement_fire_upkeep` / `_drive_full_turn` mirror the production
+	  loop), and keeps the speed whose averaged terminal state value is best.
+	  The value function (`_eval_state`) is own-minus-enemy fighting strength
+	  (armour + system boxes, docked for fires) plus a decisive win/loss bonus;
+	  Monte-Carlo salting averages over the dice. `for_ship_with_lookahead()` is
+	  the difficulty handle. Probe (100 duels): baseline scout **4%** → scout-
+	  lookahead **7%** (and 0 timeouts), cruiser still rightly dominant — the
+	  framework strengthens whichever captain runs it without touching the
+	  ship-balance numbers. 18 new assertions (clone independence + RNG fidelity,
+	  value sensitivity, argmax/determinism/purity of the chooser, a clean
+	  decisive integration battle).
+- [x] **Difficulty levels = evaluator noise + lookahead depth, exposed in the
+	  menu.** Three ranks (`ShipAI.Difficulty`): **Padwar** sandbags with move-
+	  scoring noise (the wired `noise` lever — sloppy positioning, wandering
+	  fire), **Dwar** is the clean 1-ply doctrine captain (the balanced default),
+	  **Odwar** runs the seeded-engine rollouts (`rollouts = 3`, one turn deep).
+	  `ShipAI.for_difficulty(def, level)` bundles the knobs (mapping lives with
+	  the brain, not the UI); the main menu carries a parchment "Enemy Command"
+	  selector that writes `BattleConfig.difficulty`, honoured by every battle the
+	  map boots (Quick Engagement, a built fleet, or a resumed save) since it's
+	  untouched by `clear()`/`set_battle()`. 8 new assertions lock the rank→knob
+	  mapping (incl. the unknown-level fallback to Dwar).
 
 > **Balance finding (the reason this phase existed).** With the AI now expressing
 > doctrine, `ai_scan.gd` reports the **cruiser winning ~98%** of mirror battles —

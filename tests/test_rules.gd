@@ -87,6 +87,13 @@ func _init() -> void:
 	_test_ai_armor_awareness()
 	_test_ai_battle()
 
+	_suite("AI lookahead")
+	_test_engine_clone()
+	_test_lookahead_value_function()
+	_test_lookahead_plot_choice()
+	_test_lookahead_battle()
+	_test_difficulty_presets()
+
 	_suite("Save / load")
 	_test_save_roundtrip()
 	_test_save_rng_determinism()
@@ -849,6 +856,157 @@ func _test_ai_armor_awareness() -> void:
 	_check(0 in fire_soft, "the deck gun still fires into the breach")
 
 
+# ---------------------------------------------------------------------------
+# AI lookahead: the seeded-engine Monte Carlo rollouts (Phase C)
+# ---------------------------------------------------------------------------
+
+## The clone primitive the rollouts are built on: a deep, independent copy that
+## reproduces the RNG sequence (so a simulated turn rolls the same dice the real
+## one would) and shares no state with the original.
+func _test_engine_clone() -> void:
+	var engine := TurnEngine.new()
+	engine.setup(20260614)
+	engine.turn_number = 5
+	engine.ships[0].armor_remaining[0] = 1
+	engine.ships[0].fires = 1
+	for _i in 3:                       # advance mid-stream, not at the seed boundary
+		engine.rng.randi()
+
+	var c := SaveGame.clone(engine)
+	_check(c != null, "clone returns a live engine")
+	_check(c != engine, "clone is a distinct engine instance")
+	_check_eq(c.turn_number, engine.turn_number, "clone copies turn_number")
+	_check_eq(c.ships.size(), engine.ships.size(), "clone copies the whole fleet")
+	_check(c.ships[0] != engine.ships[0], "clone ships are independent instances")
+	_check_eq(c.ships[0].armor_remaining[0], 1, "clone copies per-facing armor marks")
+
+	# The clone continues the exact same RNG sequence — the basis for a rollout
+	# rolling the same dice the live turn would.
+	var expected: Array[int] = []
+	for _i in 8:
+		expected.append(engine.rng.randi())
+	var got: Array[int] = []
+	for _i in 8:
+		got.append(c.rng.randi())
+	_check_eq(got, expected, "clone reproduces the original's next RNG draws")
+
+	# Independence: mutating the clone never reaches back into the live engine.
+	c.ships[0].armor_remaining[0] = 0
+	c.ships[0].fires = 9
+	_check_eq(engine.ships[0].armor_remaining[0], 1, "mutating clone armor leaves the original")
+	_check_eq(engine.ships[0].fires, 1, "mutating clone fires leaves the original")
+
+
+## The rollout's scoring function: hurting the enemy raises our state value,
+## taking damage lowers it, and an actual win lands a decisive bonus on top.
+func _test_lookahead_value_function() -> void:
+	var engine := TurnEngine.new()
+	engine.setup(7)
+	var ai := ShipAI.for_ship(engine.ships[0].def)
+	var enemy := engine.ships[1]
+	var base := ai._eval_state(engine, 0)
+
+	enemy.armor_remaining[0] = maxi(enemy.armor_remaining[0] - 2, 0)
+	enemy.systems_remaining[ShipDef.SystemType.ENGINE] -= 1
+	var hurt_enemy := ai._eval_state(engine, 0)
+	_check(hurt_enemy > base, "wounding the enemy raises our state value")
+
+	engine.ships[0].systems_remaining[ShipDef.SystemType.ENGINE] -= 1
+	engine.ships[0].fires = 1
+	var hurt_self := ai._eval_state(engine, 0)
+	_check(hurt_self < hurt_enemy, "taking damage ourselves lowers the value")
+
+	# A decisive result dwarfs any amount of chipped plate: the same board scores
+	# far higher once it's a win (enemy out, our side still flying).
+	enemy.is_destroyed = true
+	var alive := ai._eval_state(engine, 0)
+	engine.phase = TurnEngine.Phase.GAME_OVER
+	var won := ai._eval_state(engine, 0)
+	_check(won - alive > 500.0, "a won battle scores a decisive bonus")
+
+
+## The plot chooser: it returns a speed reachable this turn, is deterministic at
+## rollouts == 1, leaves the live engine untouched, and returns the argmax over
+## the candidate rollout values.
+func _test_lookahead_plot_choice() -> void:
+	var engine := TurnEngine.new()
+	engine.setup(31337)
+	var me := engine.ships[0]
+	var foe := engine.ships[1]
+	# Realistic allocations so usable speed (and the foe's rollout plot) are live.
+	ShipAI.for_ship(me.def).allocate(engine, me)
+	ShipAI.for_ship(foe.def).allocate(engine, foe)
+	var brain := ShipAI.for_ship_with_lookahead(me.def, 1, 1)
+
+	var cap := me.usable_max_speed()
+	var dv := me.max_speed_change()
+	var lo: int = clampi(me.speed - dv, 0, cap)
+	var hi: int = clampi(me.speed + dv, 0, cap)
+	var speed_before := me.speed
+
+	var chosen := brain._plot_by_lookahead(engine, me)
+	_check(chosen >= lo and chosen <= hi, "lookahead picks a speed reachable this turn")
+	_check_eq(me.speed, speed_before, "lookahead is pure — it never mutates the live engine")
+	_check_eq(brain._plot_by_lookahead(engine, me), chosen, "rollouts=1 lookahead is deterministic")
+
+	# It must return the argmax candidate. Recompute the per-speed rollout values
+	# the way the chooser does (single seeded trial, salt 0) and confirm the pick.
+	var my_index := engine.ships.find(me)
+	var best := me.speed
+	var best_v := -INF
+	for cand in range(lo, hi + 1):
+		var v := brain._rollout_value(engine, my_index, cand, 0)
+		if v > best_v:
+			best_v = v
+			best = cand
+	_check_eq(chosen, best, "lookahead returns the best-scoring candidate speed")
+
+
+## Integration: a rollout captain (side 0) against the plain 1-ply brain drives
+## real battles on the seeded engine to a decisive end without breaking any
+## invariant — the lookahead machinery plugs into the production loop cleanly.
+func _test_lookahead_battle() -> void:
+	var decided := 0
+	var clean_all := true
+	for seed_i in [1, 2, 3]:
+		var engine := TurnEngine.new()
+		engine.setup(seed_i * 7919 + 1)
+		var brains := [
+			ShipAI.for_ship_with_lookahead(engine.ships[0].def, 2, 1),
+			ShipAI.for_ship(engine.ships[1].def),
+		]
+		var r := _play_out_brains(engine, brains)
+		if not bool(r["clean"]):
+			clean_all = false
+		if int(r["winner"]) >= 0:
+			decided += 1
+	_check(clean_all, "lookahead battles keep every box count >= 0")
+	_check(decided >= 2, "at least 2 of 3 lookahead battles reach a decisive result (got %d)" % decided)
+
+
+## The menu's difficulty ranks map onto the two wired levers: Padwar sandbags
+## with move-noise, Dwar is the clean 1-ply default, Odwar runs the rollouts.
+func _test_difficulty_presets() -> void:
+	var def := ShipLibrary.ship(&"zodanga_cruiser")
+
+	var padwar := ShipAI.for_difficulty(def, ShipAI.Difficulty.PADWAR)
+	_check(padwar.noise > 0.0, "Padwar plays with positional noise (easy)")
+	_check_eq(padwar.rollouts, 0, "Padwar runs no lookahead")
+
+	var dwar := ShipAI.for_difficulty(def, ShipAI.Difficulty.DWAR)
+	_check_eq(dwar.noise, 0.0, "Dwar plays the clean 1-ply doctrine")
+	_check_eq(dwar.rollouts, 0, "Dwar runs no lookahead")
+
+	var odwar := ShipAI.for_difficulty(def, ShipAI.Difficulty.ODWAR)
+	_check(odwar.rollouts > 0, "Odwar runs the seeded-engine rollouts (hard)")
+	_check_eq(odwar.noise, 0.0, "Odwar plays its doctrine straight, no sandbagging")
+
+	# An unknown level falls back to the balanced default rather than crashing.
+	var fallback := ShipAI.for_difficulty(def, 999)
+	_check_eq(fallback.rollouts, 0, "unknown difficulty falls back to the 1-ply default")
+	_check(ShipAI.difficulty_name(ShipAI.Difficulty.ODWAR) != "", "every rank has a display name")
+
+
 func _test_fleet_setup() -> void:
 	# 1. The legacy / seed-only path still boots the classic scout-vs-cruiser duel
 	#    unchanged, so existing callers (tests, demos) keep working.
@@ -1263,6 +1421,12 @@ func _run_ai_battle_classes(a_id: StringName, b_id: StringName, seed_val: int) -
 ## or hits the turn cap. Returns { "winner": int, "clean": bool }.
 func _play_out(engine: TurnEngine) -> Dictionary:
 	var brains := [ShipAI.for_ship(engine.ships[0].def), ShipAI.for_ship(engine.ships[1].def)]
+	return _play_out_brains(engine, brains)
+
+
+## Same as _play_out, but with caller-supplied brains (one per side) — lets the
+## lookahead suite pit a rollout captain against the plain 1-ply one.
+func _play_out_brains(engine: TurnEngine, brains: Array) -> Dictionary:
 	var res := { "winner": -1, "clean": true }
 	engine.game_over.connect(func(side: int, _r: String) -> void: res["winner"] = side)
 	var cap := 80
