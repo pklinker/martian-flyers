@@ -73,6 +73,53 @@ static func for_ship_with_lookahead(def: ShipDef, p_rollouts: int, p_turns: int 
 	return ai
 
 
+# ---------------------------------------------------------------------------
+# Difficulty: the two wired levers (evaluator noise + lookahead depth) bundled
+# into the three ranks the menu offers. PADWAR sandbags with sloppy positioning;
+# DWAR is the clean 1-ply captain; ODWAR runs the seeded-engine rollouts. Held
+# here (not in the UI) so the knob mapping lives with the brain it configures.
+# ---------------------------------------------------------------------------
+
+enum Difficulty { PADWAR, DWAR, ODWAR }
+
+## Easy mode's positional sloppiness — the spread on the move-scoring noise. Big
+## enough to visibly drift the kiter out of its band and mis-present facings.
+const PADWAR_NOISE := 2.5
+## Hard mode's rollout budget: plays each candidate plot forward this many times
+## on the seeded engine and averages the outcome. Kept shallow (one turn) so the
+## enemy never stalls the player's turn.
+const ODWAR_ROLLOUTS := 3
+
+## Build the enemy brain for a chosen difficulty rank. Unknown levels fall back
+## to DWAR, the balanced default.
+static func for_difficulty(def: ShipDef, level: int) -> ShipAI:
+	match level:
+		Difficulty.PADWAR:
+			var ai := for_ship(def)
+			ai.noise = PADWAR_NOISE
+			return ai
+		Difficulty.ODWAR:
+			return for_ship_with_lookahead(def, ODWAR_ROLLOUTS, 1)
+		_:
+			return for_ship(def)
+
+
+## Short rank name for the difficulty selector.
+static func difficulty_name(level: int) -> String:
+	match level:
+		Difficulty.PADWAR: return "Padwar"
+		Difficulty.ODWAR:  return "Odwar"
+		_:                 return "Dwar"
+
+
+## One-line flavour blurb shown under the selector.
+static func difficulty_blurb(level: int) -> String:
+	match level:
+		Difficulty.PADWAR: return "Green officers — eager, but their fire wanders."
+		Difficulty.ODWAR:  return "Warlords who weigh every plot before they commit."
+		_:                 return "Seasoned line captains who hold their doctrine."
+
+
 ## Per-class doctrine. Kiters want the outer edge of their gun reach and fear
 ## being shot; brawlers want to be close with broadsides bearing and shrug off
 ## return fire. Unknown ships get a balanced mid-range default.

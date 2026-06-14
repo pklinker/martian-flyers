@@ -9,6 +9,12 @@ static var ai_roster: Array[StringName] = []
 static var budget: int = 0
 static var pending: bool = false
 
+## Chosen enemy difficulty rank (a ShipAI.Difficulty value), set on the main
+## menu and honoured by every battle the map boots — Quick Engagement, a built
+## fleet, or a resumed save. Deliberately NOT touched by clear()/set_battle() so
+## one menu choice carries across all paths. Defaults to the balanced DWAR.
+static var difficulty: int = ShipAI.Difficulty.DWAR
+
 ## Suspend/resume: leaving a battle for the menu auto-saves it here; the menu's
 ## "Resume Battle" button sets `resume` and the map reloads it on boot.
 const RESUME_PATH := "user://resume.flyersave"

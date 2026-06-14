@@ -12,6 +12,12 @@ const CRUISER := Color(0.62, 0.16, 0.13)  # matches HexMapView SIDE_COLORS[1]
 const GAME_SCENE := "res://ui/map_demo.tscn"
 const FLEET_SCENE := "res://ui/fleet_builder_screen.tscn"
 
+## The three difficulty ranks, in order, paired to their selector buttons so a
+## click can restyle every chip and refresh the blurb.
+const DIFFS := [ShipAI.Difficulty.PADWAR, ShipAI.Difficulty.DWAR, ShipAI.Difficulty.ODWAR]
+var _diff_buttons: Array[Button] = []
+var _diff_blurb: Label
+
 
 func _ready() -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -44,8 +50,14 @@ func _build_ui() -> void:
 	col.add_child(subtitle)
 
 	var gap := Control.new()
-	gap.custom_minimum_size = Vector2(0, 36)
+	gap.custom_minimum_size = Vector2(0, 24)
 	col.add_child(gap)
+
+	_build_difficulty(col)
+
+	var gap2 := Control.new()
+	gap2.custom_minimum_size = Vector2(0, 20)
+	col.add_child(gap2)
 
 	# Offered only when a battle was suspended via the in-game Menu button.
 	if BattleConfig.has_resume():
@@ -53,6 +65,74 @@ func _build_ui() -> void:
 	_add_menu_button(col, "Build Fleet", _on_build_fleet)
 	_add_menu_button(col, "Quick Engagement", _on_start)
 	_add_menu_button(col, "Quit", _on_quit)
+
+
+## The difficulty picker: a caption, a row of three parchment "rank" chips
+## (Padwar / Dwar / Odwar), and a one-line blurb describing the live choice.
+## Applies to every battle launched from here — it lives in BattleConfig.
+func _build_difficulty(col: VBoxContainer) -> void:
+	var caption := Label.new()
+	caption.text = "ENEMY COMMAND"
+	caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	caption.add_theme_font_size_override("font_size", 13)
+	caption.add_theme_color_override("font_color", FAINT)
+	col.add_child(caption)
+
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 0)
+	col.add_child(row)
+
+	_diff_buttons = []
+	for i in DIFFS.size():
+		var level: int = DIFFS[i]
+		var b := Button.new()
+		b.text = ShipAI.difficulty_name(level)
+		b.custom_minimum_size = Vector2(120, 38)
+		b.focus_mode = Control.FOCUS_NONE
+		b.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+		b.add_theme_font_size_override("font_size", 17)
+		b.pressed.connect(_on_pick_difficulty.bind(level))
+		row.add_child(b)
+		_diff_buttons.append(b)
+
+	_diff_blurb = Label.new()
+	_diff_blurb.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_diff_blurb.custom_minimum_size = Vector2(0, 22)
+	_diff_blurb.add_theme_font_size_override("font_size", 15)
+	_diff_blurb.add_theme_color_override("font_color", INK)
+	col.add_child(_diff_blurb)
+
+	_refresh_difficulty()
+
+
+func _on_pick_difficulty(level: int) -> void:
+	BattleConfig.difficulty = level
+	_refresh_difficulty()
+
+
+## Restyle every chip to mark the live choice (INK fill + paper text when
+## selected, faint outline otherwise) and update the blurb.
+func _refresh_difficulty() -> void:
+	for i in DIFFS.size():
+		_style_chip(_diff_buttons[i], DIFFS[i] == BattleConfig.difficulty)
+	_diff_blurb.text = ShipAI.difficulty_blurb(BattleConfig.difficulty)
+
+
+func _style_chip(b: Button, selected: bool) -> void:
+	var fill := INK if selected else PAPER
+	var fg := PAPER if selected else INK
+	for state in ["normal", "hover", "pressed", "focus"]:
+		var sb := StyleBoxFlat.new()
+		sb.bg_color = fill if state != "hover" or selected else PAPER.darkened(0.06)
+		sb.set_corner_radius_all(6)
+		sb.set_border_width_all(1)
+		sb.border_color = INK if selected else FAINT
+		sb.set_content_margin_all(6)
+		b.add_theme_stylebox_override(state, sb)
+	b.add_theme_color_override("font_color", fg)
+	b.add_theme_color_override("font_hover_color", fg)
+	b.add_theme_color_override("font_pressed_color", fg)
 
 
 func _add_menu_button(parent: Control, label: String, handler: Callable) -> void:

@@ -366,7 +366,7 @@ func _bind_engine(e: TurnEngine) -> void:
 	ais = {}
 	for s in engine.ships:
 		if s.side == AI_SIDE:
-			ais[s] = ShipAI.for_ship(s.def)
+			ais[s] = ShipAI.for_difficulty(s.def, BattleConfig.difficulty)
 	engine.shot_resolved.connect(_on_shot)
 	engine.damage_control_repaired.connect(_on_repair)
 	engine.fire_changed.connect(_on_fire)

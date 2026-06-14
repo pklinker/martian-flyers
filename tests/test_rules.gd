@@ -92,6 +92,7 @@ func _init() -> void:
 	_test_lookahead_value_function()
 	_test_lookahead_plot_choice()
 	_test_lookahead_battle()
+	_test_difficulty_presets()
 
 	_suite("Save / load")
 	_test_save_roundtrip()
@@ -981,6 +982,29 @@ func _test_lookahead_battle() -> void:
 			decided += 1
 	_check(clean_all, "lookahead battles keep every box count >= 0")
 	_check(decided >= 2, "at least 2 of 3 lookahead battles reach a decisive result (got %d)" % decided)
+
+
+## The menu's difficulty ranks map onto the two wired levers: Padwar sandbags
+## with move-noise, Dwar is the clean 1-ply default, Odwar runs the rollouts.
+func _test_difficulty_presets() -> void:
+	var def := ShipLibrary.ship(&"zodanga_cruiser")
+
+	var padwar := ShipAI.for_difficulty(def, ShipAI.Difficulty.PADWAR)
+	_check(padwar.noise > 0.0, "Padwar plays with positional noise (easy)")
+	_check_eq(padwar.rollouts, 0, "Padwar runs no lookahead")
+
+	var dwar := ShipAI.for_difficulty(def, ShipAI.Difficulty.DWAR)
+	_check_eq(dwar.noise, 0.0, "Dwar plays the clean 1-ply doctrine")
+	_check_eq(dwar.rollouts, 0, "Dwar runs no lookahead")
+
+	var odwar := ShipAI.for_difficulty(def, ShipAI.Difficulty.ODWAR)
+	_check(odwar.rollouts > 0, "Odwar runs the seeded-engine rollouts (hard)")
+	_check_eq(odwar.noise, 0.0, "Odwar plays its doctrine straight, no sandbagging")
+
+	# An unknown level falls back to the balanced default rather than crashing.
+	var fallback := ShipAI.for_difficulty(def, 999)
+	_check_eq(fallback.rollouts, 0, "unknown difficulty falls back to the 1-ply default")
+	_check(ShipAI.difficulty_name(ShipAI.Difficulty.ODWAR) != "", "every rank has a display name")
 
 
 func _test_fleet_setup() -> void:

@@ -278,9 +278,17 @@ ship directly at its per-class falling line. See GAME_DESIGN.md §2/§3.)*
 	  ship-balance numbers. 18 new assertions (clone independence + RNG fidelity,
 	  value sensitivity, argmax/determinism/purity of the chooser, a clean
 	  decisive integration battle).
-- [ ] Difficulty levels = evaluator weights + lookahead depth. *Weights are
-	  per-class data, `noise` is wired, and `rollouts`/`lookahead_turns` are now
-	  the depth lever; presets/menu not yet exposed.*
+- [x] **Difficulty levels = evaluator noise + lookahead depth, exposed in the
+	  menu.** Three ranks (`ShipAI.Difficulty`): **Padwar** sandbags with move-
+	  scoring noise (the wired `noise` lever — sloppy positioning, wandering
+	  fire), **Dwar** is the clean 1-ply doctrine captain (the balanced default),
+	  **Odwar** runs the seeded-engine rollouts (`rollouts = 3`, one turn deep).
+	  `ShipAI.for_difficulty(def, level)` bundles the knobs (mapping lives with
+	  the brain, not the UI); the main menu carries a parchment "Enemy Command"
+	  selector that writes `BattleConfig.difficulty`, honoured by every battle the
+	  map boots (Quick Engagement, a built fleet, or a resumed save) since it's
+	  untouched by `clear()`/`set_battle()`. 8 new assertions lock the rank→knob
+	  mapping (incl. the unknown-level fallback to Dwar).
 
 > **Balance finding (the reason this phase existed).** With the AI now expressing
 > doctrine, `ai_scan.gd` reports the **cruiser winning ~98%** of mirror battles —
