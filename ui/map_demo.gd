@@ -85,6 +85,12 @@ var phase := DemoPhase.ALLOCATE
 
 func _ready() -> void:
 	_build_ui()
+	# Resume a battle suspended via the menu, if the player asked to; otherwise
+	# start a fresh engagement.
+	if BattleConfig.resume:
+		BattleConfig.resume = false
+		if _resume_battle():
+			return
 	_new_game()
 
 
@@ -418,6 +424,23 @@ func _on_load() -> void:
 	if loaded == null:
 		log_box.append_text("[No save to load]\n")
 		return
+	_adopt_loaded(loaded)
+	log_box.append_text("[Loaded — turn %d]\n" % engine.turn_number)
+
+
+## Resume the battle the player suspended when they last opened the menu.
+func _resume_battle() -> bool:
+	var loaded := SaveGame.load_from_file(BattleConfig.RESUME_PATH)
+	if loaded == null:
+		return false
+	_adopt_loaded(loaded)
+	log_box.append_text("Battle resumed — turn %d.\n" % engine.turn_number)
+	return true
+
+
+## Bind a restored engine and re-open the current turn's ALLOCATE with each
+## ship's saved crew plan carried forward (the clean per-turn entry point).
+func _adopt_loaded(loaded: TurnEngine) -> void:
 	_bind_engine(loaded)
 	_alloc = {}
 	_plot_base = {}
@@ -433,11 +456,14 @@ func _on_load() -> void:
 			"committed": false,
 		}
 	_alloc_initialized = true
-	log_box.append_text("[Loaded — turn %d]\n" % engine.turn_number)
 	_enter_allocate()
 
 
 func _on_quit_to_menu() -> void:
+	# Suspend the in-progress battle so the menu can offer "Resume Battle". A
+	# finished battle isn't saved (and was already cleared at game over).
+	if engine != null and engine.phase != TurnEngine.Phase.GAME_OVER:
+		SaveGame.save_to_file(engine, BattleConfig.RESUME_PATH)
 	get_tree().change_scene_to_file("res://ui/main_menu.tscn")
 
 
@@ -805,10 +831,12 @@ func _on_speed(delta: int) -> void:
 
 
 func _update_speed_label() -> void:
+	# The active ship is already named in the highlighted tab above, so the bar
+	# just shows its speed and limits.
 	var p := _active
 	var b := _plot_speed_bounds()
-	speed_label.text = "  %s — Speed %d   (top %d, accel +/-%d)  " % [
-			p.def.display_name, p.speed, p.usable_max_speed(), p.max_speed_change()]
+	speed_label.text = "Speed %d   (top %d, accel +/-%d)" % [
+			p.speed, p.usable_max_speed(), p.max_speed_change()]
 	spd_dn.disabled = p.speed <= b.x
 	spd_up.disabled = p.speed >= b.y
 
@@ -1080,6 +1108,7 @@ func _play_shot_effects(r: Dictionary) -> void:
 
 func _on_game_over(side: int, reason: String) -> void:
 	phase = DemoPhase.OVER
+	BattleConfig.clear_resume()   # a finished battle can't be resumed
 	_show_bar(DemoPhase.OVER)
 	map.clear_highlights()
 	map.set_fire_targets([])

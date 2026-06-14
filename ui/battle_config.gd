@@ -9,6 +9,18 @@ static var ai_roster: Array[StringName] = []
 static var budget: int = 0
 static var pending: bool = false
 
+## Suspend/resume: leaving a battle for the menu auto-saves it here; the menu's
+## "Resume Battle" button sets `resume` and the map reloads it on boot.
+const RESUME_PATH := "user://resume.flyersave"
+static var resume: bool = false
+
+static func has_resume() -> bool:
+	return FileAccess.file_exists(RESUME_PATH)
+
+static func clear_resume() -> void:
+	if FileAccess.file_exists(RESUME_PATH):
+		DirAccess.remove_absolute(RESUME_PATH)
+
 
 static func set_battle(player: Array, ai: Array, points: int) -> void:
 	player_roster.assign(player)
