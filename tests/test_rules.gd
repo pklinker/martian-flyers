@@ -66,6 +66,7 @@ func _init() -> void:
 	_test_fire_ignite_and_burn()
 	_test_fire_doused()
 	_test_officer_casualties()
+	_test_damage_control_capacity()
 
 	_suite("Ship classes")
 	_test_new_ship_classes()
@@ -1562,6 +1563,42 @@ func _test_officer_casualties() -> void:
 	for _i in ship3.officers.size() + 1:
 		DamageResolver._hit_system(ship3, ShipDef.SystemType.BRIDGE, rng, -1)
 	_check(ship3.officers.is_empty(), "an exhausted roster simply stays empty (no crash)")
+
+
+func _test_damage_control_capacity() -> void:
+	# A destroyed station can't be manned: damage-control crew is gated by the
+	# surviving DAMAGE_CONTROL boxes, not just the crew pool.
+	var s := ShipState.create(ShipLibrary.ship(&"helium_scout"), 0, Vector2i(0, 0), 0)
+	var cap := s.damage_control_capacity()
+	_check(cap >= 1, "intact scout has damage-control capacity")
+
+	# With one DC station, asking for more parties than stations is capped down.
+	_check(s.apply_allocation({ "guns": [], "engine": 0, "damage_control": cap + 1, "lookout": 0 }),
+			"an over-DC allocation within the crew pool is accepted")
+	_check_eq(int(s.allocation.get("damage_control", -1)), cap,
+			"damage-control crew is capped at the surviving DC stations")
+
+	# Shoot the DC system away — now no crew can work damage control at all.
+	s.systems_remaining[ShipDef.SystemType.DAMAGE_CONTROL] = 0
+	_check_eq(s.damage_control_capacity(), 0, "a destroyed DC system has zero capacity")
+	_check(s.apply_allocation({ "guns": [], "engine": 0, "damage_control": 1, "lookout": 0 }),
+			"allocating a DC hand on a dead station is still legal (just useless)")
+	_check_eq(int(s.allocation.get("damage_control", -1)), 0,
+			"no crew can be assigned to a fully destroyed damage-control system")
+
+	# And the upkeep repair loop honours it: a holed tank is NOT patched when the
+	# DC station is gone, even with a DC hand nominally allocated.
+	var engine := TurnEngine.new()
+	engine.setup(1)
+	var sc := engine.ships[0]
+	sc.systems_remaining[ShipDef.SystemType.DAMAGE_CONTROL] = 0
+	var buoy_total := sc.def.system_count(ShipDef.SystemType.BUOYANCY)
+	sc.systems_remaining[ShipDef.SystemType.BUOYANCY] = buoy_total - 1   # one tank holed
+	sc.port_buoyancy = sc.port_buoyancy - 1
+	sc.allocation = { "damage_control": 1 }   # set directly, bypassing the gate
+	engine.run_upkeep()
+	_check_eq(sc.sys(ShipDef.SystemType.BUOYANCY), buoy_total - 1,
+			"a destroyed DC station patches nothing at upkeep")
 
 
 # ---------------------------------------------------------------------------

@@ -305,7 +305,11 @@ func run_upkeep() -> void:
 ## spreads), otherwise it patches a buoyancy tank. Armor is never repairable.
 func _run_damage_control(s: ShipState) -> void:
 	var buoy_total := s.def.system_count(ShipDef.SystemType.BUOYANCY)
-	for _i in int(s.allocation.get("damage_control", 0)):
+	# A station shot away can't work damage control — cap effective parties at the
+	# surviving DC boxes (apply_allocation already gates the allocation; this keeps
+	# the rule true even if state is set up directly, e.g. in tests or on load).
+	var dc_crew: int = mini(int(s.allocation.get("damage_control", 0)), s.damage_control_capacity())
+	for _i in dc_crew:
 		if s.fires > 0:
 			if rng.randi_range(1, 6) >= DamageResolver.FIRE_DOUSE_ROLL:
 				s.fires -= 1

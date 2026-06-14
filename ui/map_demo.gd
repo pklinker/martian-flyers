@@ -497,7 +497,9 @@ func _prefill_alloc(p: ShipState) -> Dictionary:
 		if left >= cost:
 			picks.append(i)
 			left -= cost
-	return { "guns": picks, "engine": eng, "dc": left, "lookout": 0, "committed": false }
+	# Only as many DC crew as there are surviving DC stations to man.
+	var dc: int = mini(left, p.damage_control_capacity())
+	return { "guns": picks, "engine": eng, "dc": dc, "lookout": 0, "committed": false }
 
 
 ## Carry a ship's plan forward, dropping only what's no longer possible: guns
@@ -511,7 +513,7 @@ func _revalidate_alloc(p: ShipState, prev: Dictionary) -> Dictionary:
 			picks.append(int(i))
 	var max_eng: int = mini(p.engine_crew_for_speed(p.effective_max_speed()), pool)
 	var eng := clampi(int(prev["engine"]), 0, max_eng)
-	var dc := maxi(int(prev["dc"]), 0)
+	var dc := clampi(int(prev["dc"]), 0, p.damage_control_capacity())
 	var lk := maxi(int(prev["lookout"]), 0)
 	while _plan_cost(p, picks, eng, dc, lk) > pool and lk > 0:
 		lk -= 1
@@ -646,7 +648,9 @@ func _edit_alloc() -> void:
 	var pool := p.crew_pool()
 	var max_eng: int = mini(p.engine_crew_for_speed(p.effective_max_speed()), pool)
 	engine_value = clampi(engine_value, 0, max_eng)
-	dc_value = clampi(dc_value, 0, pool)
+	# Damage control can't exceed the surviving DC stations — a destroyed DC
+	# system means none can be manned.
+	dc_value = clampi(dc_value, 0, mini(pool, p.damage_control_capacity()))
 	lookout_value = clampi(lookout_value, 0, pool)
 	var typed_guns: Array[int] = []
 	typed_guns.assign(guns)
