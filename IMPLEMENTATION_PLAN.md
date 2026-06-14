@@ -616,11 +616,14 @@ must cost more than a scout) and stable/deterministic.
 - [x] **Fleet-builder screen (`ui/`).** `ui/fleet_builder_screen.gd`+`.tscn`,
 	  reachable from `main_menu` ("Build Fleet"). Budget stepper, a hull catalog
 	  with per-class cost + Add, your-roster list with Remove and a live
-	  "Spent: X / budget" readout (red when over), and an auto-generated enemy
-	  roster preview regenerated to the same budget. "Launch" (gated on a valid
-	  roster) hands both rosters to the map via `BattleConfig`; `map_demo` lays
-	  them out with `setup_rosters`. "Quick Battle" / "Quick Engagement" clears
-	  `BattleConfig` and boots the default 2v2 (the fast path survives).
+	  "Spent: X / budget" readout (red when over). **The enemy fleet is hidden**
+	  (no preview — a "you'll meet them in the air" placeholder) to stop
+	  counter-picking; it is generated only at **Launch** from fresh entropy
+	  (`rng.randomize()`), to the same budget but with **no knowledge of the
+	  player's roster** (so neither side reacts to the other). "Launch" (gated on a
+	  valid roster) hands both rosters to the map via `BattleConfig`; `map_demo`
+	  lays them out with `setup_rosters`. "Quick Battle" / "Quick Engagement"
+	  clears `BattleConfig` and boots the default 2v2 (the fast path survives).
 - [x] **Tests.** A **Points-buy fleets** suite (16 assertions): `point_cost`
 	  determinism + monotone ordering (one-man<scout<cruiser<battleship), adding a
 	  gun/armour raises cost, the non-linear term makes one strong hull cost more

@@ -1,9 +1,10 @@
 extends Control
 ## Pre-battle fleet-builder: pick a points budget and spend it on hulls for your
-## squadron. The AI's roster is generated to the same budget via FleetBuilder.
-## "Launch" hands both rosters to the map through BattleConfig; "Quick Battle"
-## skips the builder with the map's default 2v2. All cost/validation logic lives
-## in FleetBuilder / ShipDef.point_cost — this screen only chooses and displays.
+## squadron. The enemy fleet stays HIDDEN here — it is generated only at Launch,
+## to the same budget but independently of your choices, so you can't counter-pick
+## (and the AI can't react to you either). "Launch" hands both rosters to the map
+## through BattleConfig; "Quick Battle" skips the builder with the map's default
+## 2v2. All cost/validation lives in FleetBuilder / ShipDef.point_cost.
 
 const PAPER := Color(0.95, 0.93, 0.86)
 const INK := Color(0.13, 0.11, 0.09)
@@ -17,23 +18,18 @@ const BUDGET_MAX := 2000
 
 var _budget := 250
 var _player: Array[StringName] = []
-var _ai: Array[StringName] = []
-var _ai_seed_base := 0
 
 # Widgets refreshed on every change.
 var budget_label: Label
 var spent_label: Label
 var roster_box: VBoxContainer
-var ai_box: VBoxContainer
 var launch_btn: Button
 
 
 func _ready() -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	resized.connect(queue_redraw)
-	_ai_seed_base = int(Time.get_unix_time_from_system())
 	_build_ui()
-	_regen_ai()
 	_refresh()
 
 
@@ -71,7 +67,8 @@ func _build_ui() -> void:
 	spent_label.add_theme_color_override("font_color", INK)
 	brow.add_child(spent_label)
 
-	# Three columns: catalog | your roster | enemy preview.
+	# Two columns: catalog | your roster. The enemy fleet is never shown here —
+	# it's assembled in secret at Launch, so there's nothing to counter-pick.
 	var cols := HBoxContainer.new()
 	cols.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	cols.add_theme_constant_override("separation", 18)
@@ -87,15 +84,6 @@ func _build_ui() -> void:
 	roster_box = VBoxContainer.new()
 	roster_box.add_theme_constant_override("separation", 3)
 	mid.add_child(roster_box)
-
-	var right := VBoxContainer.new()
-	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	right.add_theme_constant_override("separation", 4)
-	cols.add_child(right)
-	right.add_child(_heading("ENEMY SQUADRON (auto)"))
-	ai_box = VBoxContainer.new()
-	ai_box.add_theme_constant_override("separation", 3)
-	right.add_child(ai_box)
 
 	# Action row.
 	var arow := HBoxContainer.new()
@@ -148,7 +136,6 @@ func _btn(parent: Control, label: String, handler: Callable) -> Button:
 
 func _budget_step(dir: int) -> void:
 	_budget = clampi(_budget + dir * BUDGET_STEP, BUDGET_MIN, BUDGET_MAX)
-	_regen_ai()
 	_refresh()
 
 
@@ -163,29 +150,19 @@ func _remove_ship(index: int) -> void:
 	_refresh()
 
 
-## Regenerate the enemy roster to the current budget. Seeded by a per-session
-## base XOR the budget, so the preview matches what launches and varies per visit.
-func _regen_ai() -> void:
-	var rng := RandomNumberGenerator.new()
-	rng.seed = _ai_seed_base ^ (_budget * 2654435761)
-	_ai = FleetBuilder.generate_roster(_budget, rng)
-
-
 func _refresh() -> void:
 	budget_label.text = "  %d pts  " % _budget
 	var spent := FleetBuilder.roster_cost(_player)
 	spent_label.text = "    Spent: %d / %d" % [spent, _budget]
 	spent_label.add_theme_color_override("font_color", OVER if spent > _budget else INK)
 
-	_fill_roster(roster_box, _player, true)
-	_fill_roster(ai_box, _ai, false)
+	_fill_roster(roster_box, _player)
 
 	launch_btn.disabled = not FleetBuilder.is_valid(_player, _budget)
 
 
-## Render a roster into `box`. Player rows get a Remove button; the enemy preview
-## is read-only.
-func _fill_roster(box: VBoxContainer, roster: Array, removable: bool) -> void:
+## Render the player's roster into `box`, each row with a Remove button.
+func _fill_roster(box: VBoxContainer, roster: Array) -> void:
 	for c in box.get_children():
 		box.remove_child(c)
 		c.queue_free()
@@ -200,14 +177,12 @@ func _fill_roster(box: VBoxContainer, roster: Array, removable: bool) -> void:
 		var row := HBoxContainer.new()
 		row.add_theme_constant_override("separation", 6)
 		box.add_child(row)
+		var idx := i
+		_btn(row, "x", func() -> void: _remove_ship(idx))
 		var lbl := Label.new()
 		lbl.text = "%s  (%d)" % [d.display_name, d.point_cost()]
-		lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		lbl.add_theme_color_override("font_color", INK)
 		row.add_child(lbl)
-		if removable:
-			var idx := i
-			_btn(row, "x", func() -> void: _remove_ship(idx))
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +192,12 @@ func _fill_roster(box: VBoxContainer, roster: Array, removable: bool) -> void:
 func _on_launch() -> void:
 	if not FleetBuilder.is_valid(_player, _budget):
 		return
-	BattleConfig.set_battle(_player, _ai, _budget)
+	# Generate the enemy fleet now, from fresh entropy — to the same budget but
+	# with no knowledge of the player's roster (and unseen until the battle opens).
+	var rng := RandomNumberGenerator.new()
+	rng.randomize()
+	var ai := FleetBuilder.generate_roster(_budget, rng)
+	BattleConfig.set_battle(_player, ai, _budget)
 	get_tree().change_scene_to_file(GAME_SCENE)
 
 
