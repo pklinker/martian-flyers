@@ -15,6 +15,15 @@ static func ship(id: StringName) -> ShipDef:
 	_ensure_built()
 	return _ships[id]
 
+## All ship-class ids, in definition order (deterministic — Dictionary keeps
+## insertion order). The catalog the FleetBuilder and the fleet-builder UI list.
+static func ship_ids() -> Array[StringName]:
+	_ensure_built()
+	var out: Array[StringName] = []
+	for id in _ships.keys():
+		out.append(id)
+	return out
+
 static func _ensure_built() -> void:
 	if not _guns.is_empty():
 		return

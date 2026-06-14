@@ -53,17 +53,84 @@ var _movement_queue: Array[ShipState] = []
 var _fire_queue: Array[Dictionary] = []
 
 
+## Legacy / zero-arg entry point: the classic scout-vs-cruiser duel centred on
+## the large field (neither flyer anywhere near an edge). Existing tests and
+## demos call setup(seed) and must boot unchanged — they opt into fleets by
+## calling setup_fleet()/setup_rosters() instead.
 func setup(seed_value: int = 0) -> void:
+	setup_fleet([
+		{ "ship_id": &"helium_scout", "side": 0, "hex": Vector2i(20, 10), "facing": 1 },
+		{ "ship_id": &"zodanga_cruiser", "side": 1, "hex": Vector2i(32, 4), "facing": 4 },
+	], seed_value)
+
+
+## Fleet-driven setup: lay out an arbitrary roster of ships. `fleets` is a list
+## of placement dictionaries — each
+##   { ship_id: StringName, side: int, hex: Vector2i, facing: int }
+## Placement is a rules concern, not a UI nicety: every ship must deploy on the
+## board (map_contains) and no two ships may stack (the collision rule). A
+## requested hex that is off-board or already taken is nudged to the nearest free
+## legal hex, so any caller-supplied roster always deploys somewhere valid.
+func setup_fleet(fleets: Array, seed_value: int = 0) -> void:
 	if seed_value != 0:
 		rng.seed = seed_value
-	# Start well inside the large field (same relative pose as before, shifted to
-	# the middle) so neither flyer is anywhere near an edge.
-	ships.assign([
-		ShipState.create(ShipLibrary.ship(&"helium_scout"), 0, Vector2i(20, 10), 1),
-		ShipState.create(ShipLibrary.ship(&"zodanga_cruiser"), 1, Vector2i(32, 4), 4),
-	])
+	var built: Array[ShipState] = []
+	var occupied: Array[Vector2i] = []
+	for p in fleets:
+		var want: Vector2i = p.get("hex", Vector2i(map_cols / 2, map_rows / 2))
+		var hex := _deploy_hex(want, occupied)
+		occupied.append(hex)
+		built.append(ShipState.create(
+				ShipLibrary.ship(p["ship_id"]),
+				int(p.get("side", 0)), hex, int(p.get("facing", 0))))
+	ships.assign(built)
 	_place_terrain()
 	_set_phase(Phase.ALLOCATION)
+
+
+## Convenience for the common case: two rosters of ship ids laid out on opposing
+## deployment lines either side of the field centre, each line facing the enemy.
+## Builds placements and defers to setup_fleet (so the no-stack / on-board rules
+## still apply).
+func setup_rosters(side0: Array, side1: Array, seed_value: int = 0) -> void:
+	var cx := map_cols / 2
+	var placements: Array = []
+	# Side 0 deploys west of centre facing NE (1) toward the enemy; side 1 east of
+	# centre facing SW (4). Ships on a line are spread two hexes apart so the
+	# deploy nudge rarely has to fire, but it still guards against any overlap.
+	for i in side0.size():
+		placements.append({ "ship_id": side0[i], "side": 0,
+				"hex": Vector2i(cx - 6, 16 + i * 2), "facing": 1 })
+	for i in side1.size():
+		placements.append({ "ship_id": side1[i], "side": 1,
+				"hex": Vector2i(cx + 6, 8 + i * 2), "facing": 4 })
+	setup_fleet(placements, seed_value)
+
+
+## The nearest legal, unoccupied deploy hex at or spiralling out from `want`.
+## Respects map_contains and the no-stack rule (occupied list). Falls back to the
+## requested hex only if the whole field is somehow full (never in practice).
+func _deploy_hex(want: Vector2i, occupied: Array[Vector2i]) -> Vector2i:
+	if map_contains(want) and not want in occupied:
+		return want
+	var max_radius := maxi(map_cols, map_rows)
+	for radius in range(1, max_radius):
+		for h in _hex_ring(want, radius):
+			if map_contains(h) and not h in occupied:
+				return h
+	return want
+
+
+## The hexes exactly `radius` away from `center`. Used only by deploy placement,
+## so a simple bounding-box scan (correct, tiny radii) beats a clever ring walk.
+func _hex_ring(center: Vector2i, radius: int) -> Array[Vector2i]:
+	var out: Array[Vector2i] = []
+	for dq in range(-radius, radius + 1):
+		for dr in range(-radius, radius + 1):
+			var h := center + Vector2i(dq, dr)
+			if HexMath.distance(center, h) == radius:
+				out.append(h)
+	return out
 
 
 func _place_terrain() -> void:
@@ -238,7 +305,11 @@ func run_upkeep() -> void:
 ## spreads), otherwise it patches a buoyancy tank. Armor is never repairable.
 func _run_damage_control(s: ShipState) -> void:
 	var buoy_total := s.def.system_count(ShipDef.SystemType.BUOYANCY)
-	for _i in int(s.allocation.get("damage_control", 0)):
+	# A station shot away can't work damage control — cap effective parties at the
+	# surviving DC boxes (apply_allocation already gates the allocation; this keeps
+	# the rule true even if state is set up directly, e.g. in tests or on load).
+	var dc_crew: int = mini(int(s.allocation.get("damage_control", 0)), s.damage_control_capacity())
+	for _i in dc_crew:
 		if s.fires > 0:
 			if rng.randi_range(1, 6) >= DamageResolver.FIRE_DOUSE_ROLL:
 				s.fires -= 1
@@ -272,18 +343,71 @@ func _burn_fires(s: ShipState) -> void:
 			s.fires += 1
 			fire_changed.emit(s, s.fires, "the fire spreads")
 
-func _check_victory() -> void:
+## A ship out of action is one that's been destroyed, grounded, or had its crew
+## wiped (no one left to fly it). The single predicate the victory check and the
+## living-ship queries share, so UI/AI never re-derive "is this ship done".
+func is_out_of_action(s: ShipState) -> bool:
+	return s.is_destroyed or s.grounded or s.crew_pool() == 0
+
+## The ships still flying for a side (empty when the whole side is out).
+func living_ships(side: int) -> Array[ShipState]:
+	var out: Array[ShipState] = []
 	for s in ships:
-		# Crew wiped out — no one left to fly the ship.
+		if s.side == side and not is_out_of_action(s):
+			out.append(s)
+	return out
+
+## Does a side still have at least one flyer in the fight?
+func side_alive(side: int) -> bool:
+	for s in ships:
+		if s.side == side and not is_out_of_action(s):
+			return true
+	return false
+
+## Victory is now side-based: the engagement ends only when an entire side is
+## out of action, not the instant one ship falls. A crew-wiped ship is first
+## marked destroyed (so it wrecks and signals like any loss), then we tally which
+## sides still have a flyer. One side left → it wins; both emptied in the same
+## resolution → a draw (side -1).
+func _check_victory() -> void:
+	if phase == Phase.GAME_OVER:
+		return
+	# Crew wiped out — no one left to fly the ship; mark it a loss.
+	for s in ships:
 		if not s.is_destroyed and not s.grounded and s.crew_pool() == 0:
 			s.is_destroyed = true
-		if s.is_destroyed or s.grounded:
-			var winner := 1 - s.side
-			_set_phase(Phase.GAME_OVER)
-			game_over.emit(winner,
-					"%s %s" % [s.def.display_name,
-					"destroyed" if s.is_destroyed else "forced to ground"])
-			return
+	# Which sides are present, and which of them still have a live ship?
+	var side_has_live: Dictionary = {}
+	for s in ships:
+		if not side_has_live.has(s.side):
+			side_has_live[s.side] = false
+		if not is_out_of_action(s):
+			side_has_live[s.side] = true
+	if side_has_live.size() < 2:
+		return   # a single-side (or empty) field has nothing to win against
+	var alive_sides: Array[int] = []
+	for side in side_has_live:
+		if side_has_live[side]:
+			alive_sides.append(side)
+	if alive_sides.size() >= 2:
+		return   # at least two sides still flying — the battle continues
+	_set_phase(Phase.GAME_OVER)
+	if alive_sides.size() == 1:
+		game_over.emit(alive_sides[0], _victory_reason(alive_sides[0]))
+	else:
+		# Mutual wipeout in the same resolution — neither side is left standing.
+		game_over.emit(-1, "Both fleets are wiped out — a mutual rout")
+
+
+## Genre-voice summary of the defeated side for the combat log / game-over modal.
+func _victory_reason(winner: int) -> String:
+	var lost: Array[String] = []
+	for s in ships:
+		if s.side != winner:
+			lost.append(s.def.display_name)
+	if lost.size() == 1:
+		return "%s out of action" % lost[0]
+	return "the opposing fleet is out of action"
 
 func _set_phase(p: Phase) -> void:
 	phase = p

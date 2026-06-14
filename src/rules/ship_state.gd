@@ -157,6 +157,13 @@ func pop_officer() -> String:
 func crew_pool() -> int:
 	return sys(ShipDef.SystemType.CREW)
 
+## Damage-control parties the surviving DC stations can run this turn. You can't
+## man a station that's been shot away, so a fully destroyed DAMAGE_CONTROL
+## system means no crew can work damage control at all. The allocation UI gates
+## the stepper on this; apply_allocation enforces it for the AI too.
+func damage_control_capacity() -> int:
+	return sys(ShipDef.SystemType.DAMAGE_CONTROL)
+
 func gun_ready(i: int) -> bool:
 	var g := gun_states[i]
 	if g["destroyed"] or g["reload"] != 0 or not g["manned"] or is_destroyed:
@@ -237,15 +244,20 @@ func fire_preview(i: int, target_hex: Vector2i, terrain: Dictionary = {}) -> Dic
 
 ## Called at the start of each turn, after crew allocation is chosen.
 func apply_allocation(alloc: Dictionary) -> bool:
+	# A destroyed station can't be manned: cap damage-control crew at the surviving
+	# DAMAGE_CONTROL boxes. (Guns are gated by gun_ready/destroyed; engine crew is
+	# gated by effective_max_speed, which is zero once the engine is gone.)
+	var dc := mini(int(alloc.get("damage_control", 0)), damage_control_capacity())
 	var needed := 0
 	for i in alloc.get("guns", []):
 		var gun: GunDef = ShipLibrary.gun(def.gun_mounts[i]["gun_id"])
 		needed += gun.crew_required
-	needed += int(alloc.get("engine", 0)) + int(alloc.get("damage_control", 0))
+	needed += int(alloc.get("engine", 0)) + dc
 	needed += int(alloc.get("lookout", 0))
 	if needed > crew_pool():
 		return false  # illegal allocation; caller must fix
-	allocation = alloc
+	allocation = alloc.duplicate()
+	allocation["damage_control"] = dc   # store the gated value, not the request
 	for i in gun_states.size():
 		gun_states[i]["manned"] = i in alloc.get("guns", [])
 	return true

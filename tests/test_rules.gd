@@ -66,10 +66,21 @@ func _init() -> void:
 	_test_fire_ignite_and_burn()
 	_test_fire_doused()
 	_test_officer_casualties()
+	_test_damage_control_capacity()
 
 	_suite("Ship classes")
 	_test_new_ship_classes()
 	_test_new_class_battles()
+
+	_suite("Fleets")
+	_test_fleet_setup()
+	_test_side_victory()
+	_test_fleet_cadence()
+	_test_fleet_ai_battle()
+
+	_suite("Points-buy fleets")
+	_test_point_cost()
+	_test_fleet_builder()
 
 	_suite("AI")
 	_test_ai_evaluator()
@@ -838,6 +849,386 @@ func _test_ai_armor_awareness() -> void:
 	_check(0 in fire_soft, "the deck gun still fires into the breach")
 
 
+func _test_fleet_setup() -> void:
+	# 1. The legacy / seed-only path still boots the classic scout-vs-cruiser duel
+	#    unchanged, so existing callers (tests, demos) keep working.
+	var legacy := TurnEngine.new()
+	legacy.setup(1)
+	_check_eq(legacy.ships.size(), 2, "legacy setup still fields two ships")
+	_check_eq(String(legacy.ships[0].def.id), "helium_scout", "legacy side 0 is the scout")
+	_check_eq(String(legacy.ships[1].def.id), "zodanga_cruiser", "legacy side 1 is the cruiser")
+	_check_eq(legacy.ships[0].hex, Vector2i(20, 10), "legacy scout keeps its centred start")
+
+	# 2. An explicit fleet of placements: a 2-vs-1 with a mix of classes. Every
+	#    ship deploys on the board, none stack, and sides/facings are honoured.
+	var engine := TurnEngine.new()
+	engine.setup_fleet([
+		{ "ship_id": &"helium_scout", "side": 0, "hex": Vector2i(18, 12), "facing": 1 },
+		{ "ship_id": &"one_man_flyer", "side": 0, "hex": Vector2i(18, 14), "facing": 1 },
+		{ "ship_id": &"zodanga_cruiser", "side": 1, "hex": Vector2i(30, 8), "facing": 4 },
+	], 4242)
+	_check_eq(engine.ships.size(), 3, "fleet setup fields all three ships")
+	_check_eq(engine.ships[0].side, 0, "placement side 0 honoured")
+	_check_eq(engine.ships[2].side, 1, "placement side 1 honoured")
+	_check_eq(engine.ships[1].facing, 1, "placement facing honoured")
+	var all_on_board := true
+	for s in engine.ships:
+		if not engine.map_contains(s.hex):
+			all_on_board = false
+	_check(all_on_board, "every placed ship is on the board")
+	_check(_no_ship_stacks(engine), "no two placed ships share a hex")
+
+	# 3. Two ships requesting the SAME hex must not stack — the deploy nudge
+	#    spills the second onto the nearest free legal hex.
+	var clash := TurnEngine.new()
+	clash.setup_fleet([
+		{ "ship_id": &"helium_scout", "side": 0, "hex": Vector2i(24, 6), "facing": 0 },
+		{ "ship_id": &"helium_scout", "side": 1, "hex": Vector2i(24, 6), "facing": 3 },
+	], 7)
+	_check_eq(clash.ships[0].hex, Vector2i(24, 6), "first ship takes the requested hex")
+	_check(clash.ships[1].hex != clash.ships[0].hex, "clashing second ship is nudged off the stack")
+	_check(clash.map_contains(clash.ships[1].hex), "the nudged hex is still on the board")
+	_check_eq(HexMath.distance(clash.ships[1].hex, Vector2i(24, 6)), 1,
+			"the nudge lands on the nearest ring (distance 1)")
+
+	# 4. An off-board placement request is pulled back onto the field.
+	var off := TurnEngine.new()
+	off.setup_fleet([
+		{ "ship_id": &"helium_scout", "side": 0, "hex": Vector2i(-5, -5), "facing": 0 },
+	], 9)
+	_check(off.map_contains(off.ships[0].hex), "off-board request is nudged onto the field")
+
+	# 5. The roster convenience lays a 3-v-2 on opposing deployment lines: right
+	#    counts and sides, all on-board, no stacks.
+	var rosters := TurnEngine.new()
+	rosters.setup_rosters(
+		[&"helium_scout", &"one_man_flyer", &"helium_scout"],
+		[&"zodanga_cruiser", &"helium_battleship"], 555)
+	_check_eq(rosters.ships.size(), 5, "rosters field every ship from both lines")
+	var side0 := 0
+	var side1 := 0
+	for s in rosters.ships:
+		if s.side == 0: side0 += 1
+		else: side1 += 1
+	_check_eq(side0, 3, "side 0 line has three ships")
+	_check_eq(side1, 2, "side 1 line has two ships")
+	var rosters_on_board := true
+	for s in rosters.ships:
+		if not rosters.map_contains(s.hex):
+			rosters_on_board = false
+	_check(rosters_on_board, "every roster-deployed ship is on the board")
+	_check(_no_ship_stacks(rosters), "no two roster-deployed ships share a hex")
+
+
+func _test_side_victory() -> void:
+	# A 2-v-2 fleet: victory is now per-side, not the instant one ship falls.
+	var engine := TurnEngine.new()
+	engine.setup_fleet([
+		{ "ship_id": &"helium_scout", "side": 0, "hex": Vector2i(18, 12), "facing": 1 },
+		{ "ship_id": &"one_man_flyer", "side": 0, "hex": Vector2i(18, 14), "facing": 1 },
+		{ "ship_id": &"zodanga_cruiser", "side": 1, "hex": Vector2i(30, 8), "facing": 4 },
+		{ "ship_id": &"helium_battleship", "side": 1, "hex": Vector2i(30, 10), "facing": 4 },
+	], 13)
+	var result := { "winner": -2, "fired": false }
+	engine.game_over.connect(func(side: int, _r: String) -> void:
+		result["winner"] = side
+		result["fired"] = true)
+
+	_check_eq(engine.living_ships(0).size(), 2, "side 0 starts with two live ships")
+	_check(engine.side_alive(1), "side 1 starts alive")
+
+	# Lose ONE ship on side 0 — the side still flies, so no game over.
+	engine.ships[0].is_destroyed = true
+	engine._check_victory()
+	_check_eq(engine.living_ships(0).size(), 1, "side 0 down to one live ship")
+	_check(engine.side_alive(0), "a side with one of two ships left has NOT lost")
+	_check(not result["fired"], "game does not end while a side still has a flyer")
+	_check_eq(engine.phase, TurnEngine.Phase.ALLOCATION, "phase unchanged mid-battle")
+
+	# Lose the second ship on side 0 — the whole side is out; side 1 wins.
+	engine.ships[1].grounded = true
+	engine._check_victory()
+	_check(result["fired"], "game ends only on full-side wipeout")
+	_check_eq(int(result["winner"]), 1, "the side with a live ship is the winner")
+	_check_eq(engine.phase, TurnEngine.Phase.GAME_OVER, "engine enters GAME_OVER")
+
+	# A re-check after game over must not re-fire the signal.
+	result["fired"] = false
+	engine._check_victory()
+	_check(not result["fired"], "victory is not re-declared once the game is over")
+
+	# Mutual wipeout in the same resolution → a draw (side -1).
+	var draw := TurnEngine.new()
+	draw.setup_fleet([
+		{ "ship_id": &"helium_scout", "side": 0, "hex": Vector2i(18, 12), "facing": 1 },
+		{ "ship_id": &"zodanga_cruiser", "side": 1, "hex": Vector2i(30, 8), "facing": 4 },
+	], 21)
+	var draw_res := { "winner": -2 }
+	draw.game_over.connect(func(side: int, _r: String) -> void: draw_res["winner"] = side)
+	draw.ships[0].is_destroyed = true
+	draw.ships[1].is_destroyed = true
+	draw._check_victory()
+	_check_eq(int(draw_res["winner"]), -1, "both sides emptied at once is a draw (side -1)")
+
+	# is_out_of_action folds in the crew-wipe condition, and _check_victory marks
+	# a crew-wiped ship destroyed before tallying sides.
+	var crew := TurnEngine.new()
+	crew.setup(99)
+	crew.ships[0].systems_remaining[ShipDef.SystemType.CREW] = 0
+	_check(crew.is_out_of_action(crew.ships[0]), "a crew-wiped ship is out of action")
+	var crew_res := { "winner": -2 }
+	crew.game_over.connect(func(side: int, _r: String) -> void: crew_res["winner"] = side)
+	crew._check_victory()
+	_check(crew.ships[0].is_destroyed, "crew-wiped ship is marked destroyed at the victory check")
+	_check_eq(int(crew_res["winner"]), 1, "crew wipe loses the side the engagement")
+
+
+func _test_fleet_cadence() -> void:
+	# The shared impulse sequencer must interleave 4+ ships at mixed speeds: each
+	# ship is offered exactly the number of impulses the chart says it moves on.
+	var engine := TurnEngine.new()
+	engine.setup_fleet([
+		{ "ship_id": &"helium_scout", "side": 0, "hex": Vector2i(16, 14), "facing": 1 },
+		{ "ship_id": &"one_man_flyer", "side": 0, "hex": Vector2i(16, 16), "facing": 1 },
+		{ "ship_id": &"zodanga_cruiser", "side": 1, "hex": Vector2i(30, 6), "facing": 4 },
+		{ "ship_id": &"helium_battleship", "side": 1, "hex": Vector2i(30, 8), "facing": 4 },
+	], 31337)
+	var speeds := [8, 4, 2, 6]
+	for i in 4:
+		engine.ships[i].speed = speeds[i]
+	# Expected offer count per ship, straight from the impulse chart.
+	var expected: Array[int] = []
+	for i in 4:
+		var c := 0
+		for imp in range(1, TurnEngine.IMPULSES_PER_TURN + 1):
+			if TurnEngine.moves_on_impulse(speeds[i], imp):
+				c += 1
+		expected.append(c)
+
+	var impulses_seen := { "n": 0 }
+	var movers_per_impulse: Array[int] = []
+	engine.impulse_advanced.connect(func(_imp: int, movers: Array) -> void:
+		impulses_seen["n"] = int(impulses_seen["n"]) + 1
+		movers_per_impulse.append(movers.size()))
+
+	engine.begin_movement()
+	var offered := [0, 0, 0, 0]
+	var guard := 0
+	while guard < 200:
+		guard += 1
+		var s: ShipState = engine.next_mover()
+		if s == null:
+			break
+		offered[engine.ships.find(s)] += 1
+
+	_check_eq(int(impulses_seen["n"]), TurnEngine.IMPULSES_PER_TURN,
+			"all 8 impulses open with four ships in the sequence")
+	var cadence_ok := true
+	for i in 4:
+		if offered[i] != expected[i]:
+			cadence_ok = false
+	_check(cadence_ok, "each of 4 mixed-speed ships is offered exactly its chart count")
+	_check_eq(movers_per_impulse[0], 1, "only the speed-8 ship moves on impulse 1")
+	_check_eq(movers_per_impulse[7], 4, "all four ships move on impulse 8")
+
+
+func _test_fleet_ai_battle() -> void:
+	# A seeded 2-v-2 driven entirely through the engine's shared sequencer with a
+	# ShipAI per hull resolves decisively, no deadlock, no invariant violations.
+	var decided := 0
+	var clean_all := true
+	for seed_i in [1, 2, 3, 4, 5]:
+		var engine := TurnEngine.new()
+		engine.setup_rosters(
+			[&"helium_scout", &"one_man_flyer"],
+			[&"zodanga_cruiser", &"helium_battleship"], seed_i * 6151 + 7)
+		var r := _play_out_fleet(engine)
+		if not bool(r["clean"]):
+			clean_all = false
+		if int(r["winner"]) != -2:   # -2 == hit the turn cap (indecisive)
+			decided += 1
+	_check(clean_all, "2v2 ShipAI battles keep every box count >= 0")
+	_check(decided >= 4, "at least 4 of 5 2v2 ShipAI battles reach a decisive result (got %d)" % decided)
+
+
+## Drive a fully set-up N-ship engine with a ShipAI per hull until it resolves or
+## hits the turn cap, using the engine's own begin_movement/next_mover sequencer.
+## Returns { "winner": int (-2 if capped), "clean": bool }.
+func _play_out_fleet(engine: TurnEngine) -> Dictionary:
+	var brains := {}
+	for s in engine.ships:
+		brains[s] = ShipAI.for_ship(s.def)
+	var res := { "winner": -2, "clean": true }
+	engine.game_over.connect(func(side: int, _r: String) -> void: res["winner"] = side)
+	var cap := 100
+	while engine.phase != TurnEngine.Phase.GAME_OVER and engine.turn_number <= cap:
+		for s in engine.ships:
+			if not engine.is_out_of_action(s):
+				brains[s].allocate(engine, s)
+		for s in engine.ships:
+			if not engine.is_out_of_action(s):
+				brains[s].plot(engine, s)
+		engine.begin_movement()
+		var guard := 0
+		while guard < 400:
+			guard += 1
+			var s: ShipState = engine.next_mover()
+			if s == null:
+				break
+			var moves := engine.legal_moves_for(s)
+			if not moves.is_empty():
+				engine.execute_move(s, brains[s].choose_move(engine, s, moves))
+		for s in engine.ships:
+			if engine.is_out_of_action(s):
+				continue
+			var enemy := _nearest_living_enemy(engine, s)
+			if enemy == null:
+				continue
+			for mi in brains[s].choose_fire(s, enemy, engine.terrain):
+				engine.declare_fire(s, mi, enemy)
+		engine.resolve_fire_phase()
+		for sh in engine.ships:
+			for a in sh.armor_remaining:
+				if a < 0:
+					res["clean"] = false
+			for t in sh.systems_remaining.keys():
+				if int(sh.systems_remaining[t]) < 0:
+					res["clean"] = false
+			if sh.port_buoyancy < 0 or sh.stbd_buoyancy < 0:
+				res["clean"] = false
+		if engine.phase == TurnEngine.Phase.GAME_OVER:
+			break
+		engine.run_upkeep()
+	return res
+
+
+func _test_point_cost() -> void:
+	# Determinism: a class prices identically every call.
+	var scout := ShipLibrary.ship(&"helium_scout")
+	_check_eq(scout.point_cost(), scout.point_cost(), "point_cost is deterministic")
+
+	# Ordering: a heavier hull always costs more than a lighter one.
+	var one_man := ShipLibrary.ship(&"one_man_flyer").point_cost()
+	var sc := ShipLibrary.ship(&"helium_scout").point_cost()
+	var cr := ShipLibrary.ship(&"zodanga_cruiser").point_cost()
+	var bb := ShipLibrary.ship(&"helium_battleship").point_cost()
+	_check(one_man < sc and sc < cr and cr < bb,
+			"cost is monotone: one-man < scout < cruiser < battleship (%d<%d<%d<%d)" % [one_man, sc, cr, bb])
+
+	# Adding a gun raises the cost; adding armour raises the cost.
+	var base := ShipLibrary.ship(&"helium_scout").point_cost()
+	var more_guns := ShipLibrary.ship(&"helium_scout").duplicate(true) as ShipDef
+	var mounts := more_guns.gun_mounts.duplicate()
+	mounts.append({ "gun_id": &"heavy_gun", "arcs": [0, 1, 5], "label": "Extra Battery" })
+	more_guns.gun_mounts.assign(mounts)
+	_check(more_guns.point_cost() > base, "adding a gun mount raises the cost")
+
+	var more_armor := ShipLibrary.ship(&"helium_scout").duplicate(true) as ShipDef
+	var arm := more_armor.armor.duplicate()
+	arm[0] += 5
+	more_armor.armor.assign(arm)
+	_check(more_armor.point_cost() > base, "adding armour raises the cost")
+
+	# Non-linearity: one strong hull costs MORE than two weak hulls whose stats
+	# sum to it (convex exponents + the offence×defence cross term).
+	var strong := _scaled_hull(2)
+	var weak := _scaled_hull(1)
+	_check(strong.point_cost() > 2 * weak.point_cost(),
+			"one strong hull (%d) costs more than two half-hulls (2x%d) of the same raw stats" % [
+			strong.point_cost(), weak.point_cost()])
+
+	# An override pins the cost, bypassing the derivation.
+	var pinned := ShipLibrary.ship(&"helium_scout").duplicate(true) as ShipDef
+	pinned.point_cost_override = 999
+	_check_eq(pinned.point_cost(), 999, "point_cost_override pins the cost")
+
+
+## A synthetic hull scaled by `m`: every cost-driving stat is m× the base, so
+## _scaled_hull(2) has exactly the summed raw stats of two _scaled_hull(1)s.
+func _scaled_hull(m: int) -> ShipDef:
+	var d := ShipDef.new()
+	d.id = &"synth_hull"
+	d.display_name = "Synthetic Hull"
+	var av := 4 * m
+	d.armor.assign([av, av, av, av, av, av])
+	var mounts: Array[Dictionary] = []
+	for _i in 3 * m:
+		mounts.append({ "gun_id": &"heavy_gun", "arcs": [0, 1], "label": "Battery" })
+	d.gun_mounts.assign(mounts)
+	d.systems = {
+		ShipDef.SystemType.BUOYANCY: 10 * m,
+		ShipDef.SystemType.ENGINE: 4 * m,
+		ShipDef.SystemType.PROPELLER: 2 * m,
+		ShipDef.SystemType.RUDDER: 2 * m,
+		ShipDef.SystemType.BRIDGE: 1 * m,
+		ShipDef.SystemType.CREW: 10 * m,
+		ShipDef.SystemType.MAGAZINE: 1 * m,
+		ShipDef.SystemType.DAMAGE_CONTROL: 1 * m,
+	}
+	d.base_max_speed = 4 * m
+	d.speed_per_engine_crew = 2
+	d.turn_mode_by_speed.assign([2, 2, 2, 2])
+	return d
+
+
+func _test_fleet_builder() -> void:
+	var classes := FleetBuilder.available_classes()
+	_check(classes.size() >= 4, "catalog lists every ship class")
+	_check(classes[0].has("id") and classes[0].has("display_name") and classes[0].has("point_cost"),
+			"catalog entries carry id / display_name / point_cost")
+
+	var scout_cost := ShipLibrary.ship(&"helium_scout").point_cost()
+	var cruiser_cost := ShipLibrary.ship(&"zodanga_cruiser").point_cost()
+	_check_eq(FleetBuilder.roster_cost([&"helium_scout", &"helium_scout"]), scout_cost * 2,
+			"roster_cost sums the class costs")
+
+	_check(FleetBuilder.is_valid([&"helium_scout"], scout_cost),
+			"a roster exactly on budget is valid")
+	_check(not FleetBuilder.is_valid([&"zodanga_cruiser"], cruiser_cost - 1),
+			"an over-budget roster is rejected")
+	_check(not FleetBuilder.is_valid([], 1000), "an empty roster is invalid")
+
+	# Seeded generation: deterministic, within budget, non-empty.
+	var rng1 := RandomNumberGenerator.new()
+	rng1.seed = 12345
+	var rng2 := RandomNumberGenerator.new()
+	rng2.seed = 12345
+	var r1 := FleetBuilder.generate_roster(300, rng1)
+	var r2 := FleetBuilder.generate_roster(300, rng2)
+	_check_eq(r1, r2, "generate_roster is deterministic for a fixed seed")
+	_check(not r1.is_empty(), "generated roster is non-empty")
+	_check(FleetBuilder.roster_cost(r1) <= 300, "generated roster stays within budget (%d <= 300)" % FleetBuilder.roster_cost(r1))
+	# A budget below the cheapest hull still yields a (single, fallback) ship.
+	var rng3 := RandomNumberGenerator.new()
+	rng3.seed = 7
+	_check(not FleetBuilder.generate_roster(1, rng3).is_empty(),
+			"a tiny budget still fields one fallback hull")
+
+
+## Nearest living enemy of `s` across the whole fleet (mirrors ShipAI._enemy).
+func _nearest_living_enemy(engine: TurnEngine, s: ShipState) -> ShipState:
+	var best: ShipState = null
+	var best_d := 1 << 30
+	for o in engine.ships:
+		if o.side == s.side or engine.is_out_of_action(o):
+			continue
+		var d := HexMath.distance(s.hex, o.hex)
+		if d < best_d:
+			best_d = d
+			best = o
+	return best
+
+
+## True when no two live ships occupy the same hex (the no-stack collision rule).
+func _no_ship_stacks(engine: TurnEngine) -> bool:
+	var seen: Array[Vector2i] = []
+	for s in engine.ships:
+		if s.hex in seen:
+			return false
+		seen.append(s.hex)
+	return true
+
+
 func _test_ai_battle() -> void:
 	# ShipAI on both sides, on the bounded map, terminates decisively without
 	# deadlock or invariant violations.
@@ -1279,6 +1670,42 @@ func _test_officer_casualties() -> void:
 	for _i in ship3.officers.size() + 1:
 		DamageResolver._hit_system(ship3, ShipDef.SystemType.BRIDGE, rng, -1)
 	_check(ship3.officers.is_empty(), "an exhausted roster simply stays empty (no crash)")
+
+
+func _test_damage_control_capacity() -> void:
+	# A destroyed station can't be manned: damage-control crew is gated by the
+	# surviving DAMAGE_CONTROL boxes, not just the crew pool.
+	var s := ShipState.create(ShipLibrary.ship(&"helium_scout"), 0, Vector2i(0, 0), 0)
+	var cap := s.damage_control_capacity()
+	_check(cap >= 1, "intact scout has damage-control capacity")
+
+	# With one DC station, asking for more parties than stations is capped down.
+	_check(s.apply_allocation({ "guns": [], "engine": 0, "damage_control": cap + 1, "lookout": 0 }),
+			"an over-DC allocation within the crew pool is accepted")
+	_check_eq(int(s.allocation.get("damage_control", -1)), cap,
+			"damage-control crew is capped at the surviving DC stations")
+
+	# Shoot the DC system away — now no crew can work damage control at all.
+	s.systems_remaining[ShipDef.SystemType.DAMAGE_CONTROL] = 0
+	_check_eq(s.damage_control_capacity(), 0, "a destroyed DC system has zero capacity")
+	_check(s.apply_allocation({ "guns": [], "engine": 0, "damage_control": 1, "lookout": 0 }),
+			"allocating a DC hand on a dead station is still legal (just useless)")
+	_check_eq(int(s.allocation.get("damage_control", -1)), 0,
+			"no crew can be assigned to a fully destroyed damage-control system")
+
+	# And the upkeep repair loop honours it: a holed tank is NOT patched when the
+	# DC station is gone, even with a DC hand nominally allocated.
+	var engine := TurnEngine.new()
+	engine.setup(1)
+	var sc := engine.ships[0]
+	sc.systems_remaining[ShipDef.SystemType.DAMAGE_CONTROL] = 0
+	var buoy_total := sc.def.system_count(ShipDef.SystemType.BUOYANCY)
+	sc.systems_remaining[ShipDef.SystemType.BUOYANCY] = buoy_total - 1   # one tank holed
+	sc.port_buoyancy = sc.port_buoyancy - 1
+	sc.allocation = { "damage_control": 1 }   # set directly, bypassing the gate
+	engine.run_upkeep()
+	_check_eq(sc.sys(ShipDef.SystemType.BUOYANCY), buoy_total - 1,
+			"a destroyed DC station patches nothing at upkeep")
 
 
 # ---------------------------------------------------------------------------

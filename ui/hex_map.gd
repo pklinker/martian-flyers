@@ -26,6 +26,7 @@ const GRID := Color(0.45, 0.38, 0.28, 0.55)
 const HIGHLIGHT := Color(0.25, 0.60, 0.25, 0.45)
 const HIGHLIGHT_EDGE := Color(0.15, 0.45, 0.15)
 const ACTIVE_RING := Color(0.95, 0.75, 0.15)
+const TARGET_RETICLE := Color(0.85, 0.18, 0.15, 0.9)
 const SIDE_COLORS: Array[Color] = [Color(0.16, 0.32, 0.62), Color(0.62, 0.16, 0.13)]
 const WRECK := Color(0.35, 0.32, 0.30)
 
@@ -38,7 +39,24 @@ var engine: TurnEngine
 var highlight_moves: Array[Dictionary] = []
 var active_ship: ShipState
 
+## Hexes the active ship's chosen guns are currently aimed at (FIRE phase). Pure
+## presentation — drawn as target reticles so the player sees who they'll shoot.
+var fire_targets: Array[Vector2i] = []
+
 var _origin := Vector2.ZERO
+
+## Camera: a manual pan/zoom view. `_cam_center` is the cartesian (hex-unit)
+## point held at the centre of the view; `hex_size` is the zoom. The view used to
+## auto-fit every frame, which made fleets jump around on every redraw — now the
+## player drives it (drag to pan, wheel/pinch to zoom), with frame_ships() as a
+## one-shot "fit everything" used at battle start and the Recenter button.
+var _cam_center := Vector2.ZERO
+var _needs_initial_frame := true
+var _press_pos := Vector2.ZERO
+var _panning := false
+
+const MAX_HEX := 64.0                  # manual zoom-in ceiling
+const PAN_THRESHOLD := 6.0             # px of drag before a click becomes a pan
 
 ## Transient combat effects: short-lived tracers (firer->target streaks) and
 ## flashes (bursts at a hex). Pure presentation — they animate on _process and
@@ -65,6 +83,16 @@ func set_highlights(moves: Array[Dictionary], for_ship: ShipState) -> void:
 
 func clear_highlights() -> void:
 	highlight_moves = []
+	queue_redraw()
+
+## Mark which ship the per-ship phase bars (allocate/plot/fire) are editing, so
+## the player sees the active flyer ringed even when there are no move highlights.
+func set_active_ship(s: ShipState) -> void:
+	active_ship = s
+	queue_redraw()
+
+func set_fire_targets(hexes: Array[Vector2i]) -> void:
+	fire_targets = hexes
 	queue_redraw()
 
 
@@ -159,12 +187,13 @@ func _process(delta: float) -> void:
 	queue_redraw()
 
 
-## Follow camera: each draw, frame the live ships. Hold a comfortable default
-## zoom and just scroll to keep them centered; zoom OUT only when they separate
-## far enough that both wouldn't otherwise fit. The board is large, so the edge
-## is effectively never in view — the field reads as open. Sets `_origin` and
-## `hex_size`; never queues a redraw (it runs inside `_draw`).
-func _frame_camera() -> void:
+## Fit every live ship into view at once: set the zoom to hold them all with a
+## margin and centre on their midpoint. A one-shot (battle start, Recenter), NOT
+## per-frame — so panning/zooming sticks and ship-selection never yanks the view.
+func frame_ships() -> void:
+	if size.x <= 0.0 or size.y <= 0.0:
+		_needs_initial_frame = true   # no layout yet; do it on the first real draw
+		return
 	var lo := Vector2(INF, INF)
 	var hi := -lo
 	var n := 0
@@ -181,9 +210,25 @@ func _frame_camera() -> void:
 		hi = Vector2.ZERO
 	var w_units := (hi.x - lo.x) + 2.0 * (HALF_W + SHIP_MARGIN)
 	var h_units := (hi.y - lo.y) + 2.0 * (HALF_H + SHIP_MARGIN)
-	var fit := minf(size.x / w_units, size.y / h_units)
-	hex_size = clampf(fit, MIN_HEX, DEFAULT_HEX)
-	_origin = size * 0.5 - (lo + hi) * 0.5 * hex_size
+	hex_size = clampf(minf(size.x / w_units, size.y / h_units), MIN_HEX, DEFAULT_HEX)
+	_cam_center = (lo + hi) * 0.5
+	_needs_initial_frame = false
+	queue_redraw()
+
+## Hold `hex` at the centre of the view (used to follow the active mover).
+func center_on(hex: Vector2i) -> void:
+	_cam_center = HexMath.to_cartesian(hex)
+	queue_redraw()
+
+## Pan by a pixel delta (drag / two-finger scroll): move the world under the view.
+func pan(delta_px: Vector2) -> void:
+	_cam_center -= delta_px / hex_size
+	queue_redraw()
+
+## Zoom about the view centre by a multiplicative factor (wheel / pinch).
+func zoom_by(factor: float) -> void:
+	hex_size = clampf(hex_size * factor, MIN_HEX, MAX_HEX)
+	queue_redraw()
 
 
 # ---------------------------------------------------------------------------
@@ -191,17 +236,44 @@ func _frame_camera() -> void:
 # ---------------------------------------------------------------------------
 
 func _gui_input(event: InputEvent) -> void:
-	if event is InputEventMouseButton and event.pressed \
-			and event.button_index == MOUSE_BUTTON_LEFT:
-		map_pressed.emit()
-		var hex := pixel_to_hex(event.position)
-		if not contains(hex):
+	if event is InputEventMouseButton:
+		match event.button_index:
+			MOUSE_BUTTON_LEFT:
+				if event.pressed:
+					_press_pos = event.position
+					_panning = false
+				elif not _panning:
+					_click(event.position)   # a click, not a drag-pan
+			MOUSE_BUTTON_WHEEL_UP:
+				if event.pressed:
+					zoom_by(1.1)
+			MOUSE_BUTTON_WHEEL_DOWN:
+				if event.pressed:
+					zoom_by(1.0 / 1.1)
+	elif event is InputEventMouseMotion:
+		# Left-drag pans once it passes the click/drag threshold.
+		if event.button_mask & MOUSE_BUTTON_MASK_LEFT:
+			if not _panning and event.position.distance_to(_press_pos) > PAN_THRESHOLD:
+				_panning = true
+			if _panning:
+				pan(event.relative)
+	elif event is InputEventPanGesture:
+		pan(-event.delta * 24.0)             # trackpad two-finger scroll
+	elif event is InputEventMagnifyGesture:
+		zoom_by(event.factor)                # trackpad pinch
+
+
+## Resolve a left-click (no pan): a legal-move hex, then any hex.
+func _click(pos: Vector2) -> void:
+	map_pressed.emit()
+	var hex := pixel_to_hex(pos)
+	if not contains(hex):
+		return
+	for m in highlight_moves:
+		if m["hex"] == hex:
+			move_clicked.emit(m)
 			return
-		for m in highlight_moves:
-			if m["hex"] == hex:
-				move_clicked.emit(m)
-				return
-		hex_clicked.emit(hex)
+	hex_clicked.emit(hex)
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +292,9 @@ static func _facing_dir(facing: int) -> Vector2:
 	return Vector2(sin(a), -cos(a))
 
 func _draw() -> void:
-	_frame_camera()
+	if _needs_initial_frame:
+		frame_ships()                       # first draw after layout: fit the fleets
+	_origin = size * 0.5 - _cam_center * hex_size
 	draw_rect(Rect2(Vector2.ZERO, size), SEA_BOTTOM, true)
 	var font := get_theme_default_font()
 
@@ -270,6 +344,17 @@ func _draw() -> void:
 	# Ships
 	for s in engine.ships:
 		_draw_ship(font, s)
+
+	# Fire-target reticles: a red ring + crosshair over each enemy the active
+	# ship's chosen guns are aimed at this FIRE phase.
+	for hex in fire_targets:
+		var c := hex_to_pixel(hex)
+		var rad := hex_size * 0.78
+		draw_arc(c, rad, 0.0, TAU, 24, TARGET_RETICLE, 2.0)
+		draw_line(c + Vector2(-rad, 0), c + Vector2(-rad * 0.4, 0), TARGET_RETICLE, 2.0)
+		draw_line(c + Vector2(rad, 0), c + Vector2(rad * 0.4, 0), TARGET_RETICLE, 2.0)
+		draw_line(c + Vector2(0, -rad), c + Vector2(0, -rad * 0.4), TARGET_RETICLE, 2.0)
+		draw_line(c + Vector2(0, rad), c + Vector2(0, rad * 0.4), TARGET_RETICLE, 2.0)
 
 	# Combat effects, on top of everything (streaks and bursts in the air).
 	_draw_effects()

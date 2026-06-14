@@ -521,60 +521,66 @@ looks — it lives in setup, the victory rule, the turn-loop drivers, and the UI
 
 #### F1 — Multiple ships per side
 
-- [ ] **Fleet-driven `TurnEngine.setup`.** Replace the hardcoded two-ship
-	  `ships.assign([...])` with `setup(fleets, seed)` where `fleets` is a list of
-	  `{ ship_id, side, hex, facing }` placements (or two `Array[StringName]`
-	  rosters the engine lays out on opposing deployment lines). Keep a
-	  zero-arg/legacy path that builds the current scout-vs-cruiser pairing so
-	  existing tests and the demo boot unchanged until they opt in. Deployment
-	  placement is a rules concern (must respect `map_contains` and not stack —
-	  reuse the no-overlap logic).
-- [ ] **Side-based victory in `_check_victory`.** This is the one true rules
-	  change. Today it ends the game the instant *any* ship is destroyed or
-	  grounded and computes `winner = 1 - s.side`. Rewrite to: mark per-ship
-	  destruction (crew-pool-zero, destroyed, grounded) as it already does, then
-	  declare `game_over` only when **every** ship of a side is out of action.
-	  Compute the surviving side as "the side with ≥1 live ship"; handle the
-	  mutual-wipeout draw (both sides emptied in the same upkeep → emit a draw
-	  result, side = -1). Add a `side_alive(side)` / `living_ships(side)` query so
-	  UI and AI ask the engine rather than re-deriving it.
-- [ ] **Multi-ship turn loop in `map_demo`.** Today the scene hardcodes
-	  `PLAYER`/`AI` as one ship each and walks a single panel. Generalise the
-	  per-phase loop to iterate the player's living ships:
-	  - **ALLOCATE / PLOT / FIRE** become per-ship: an **active-ship selector**
-		(click a token on the map, or a roster strip of SSD tabs) drives which
-		ship the allocation/plot/fire bar is editing; the phase's Confirm gates
-		only when *every* living player ship has a committed allocation/plot/fire.
-		Track committed-ship state so the player can revisit a ship before
-		confirming the phase.
-	  - **MOVE** already interleaves correctly through `next_mover`; the only
-		change is that when the engine hands back a *player* ship the scene must
-		know which one to await a click for (it already gets the `ShipState`),
-		and highlight that ship's `legal_moves_for`.
-	  - **FIRE target picking** stops being trivial: each bearing gun needs a
-		target among the live enemies. Default each mount to the nearest enemy in
-		arc/range (engine query), let the player retarget by clicking an enemy
-		token; resolve through the existing `declare_fire` queue. Greying/`reason`
-		from `fire_preview` is per (mount, target).
-- [ ] **One `ShipAI` per AI ship.** The driver builds a `ShipAI.for_ship(def)`
-	  per AI-side ship and runs its `allocate`/`plot`/`choose_move`/`choose_fire`
-	  against the nearest enemy (already implemented). Optional, called out for
-	  later: `choose_fire` currently fires every bearing gun at one `enemy`;
-	  spreading mounts across multiple targets (focus-fire vs. split) is a fleet
-	  doctrine refinement, not required for a correct first cut.
-- [ ] **UI rendering for fleets.** `hex_map` already draws all `engine.ships`
-	  with facing arrows, side colors, the active ring, and wreck X's — extend it
-	  to (a) emit a `ship_clicked(ship)` for own-ship selection and enemy
-	  targeting, and (b) draw a target marker on the FIRE target. The SSD overlay
-	  grows from two fixed panels to a **roster**: a strip of selectable
-	  thumbnails/tabs (one per living ship per side), the selected one shown full
-	  in `ssd_panel`; dead ships greyed but still inspectable.
-- [ ] **Tests (`test_rules.gd`).** Fleet `setup` placement (on-board, no stack);
-	  side-based victory (a side with one live ship of three has *not* lost; game
-	  ends only on full-side wipeout; mutual-wipeout draw); `living_ships`/
-	  `side_alive` queries; a multi-impulse `next_mover` cadence with 4+ ships at
-	  mixed speeds; and a seeded **2v2 ShipAI battle** (decisive, no deadlock,
-	  invariants hold). Extend `ai_scan.gd` to run NvM scans.
+- [x] **Fleet-driven `TurnEngine.setup`.** `setup_fleet(fleets, seed)` takes a
+	  list of `{ ship_id, side, hex, facing }` placements; `setup_rosters(side0,
+	  side1, seed)` is the convenience that lays two `Array[StringName]` rosters on
+	  opposing deployment lines. The legacy zero-arg/seed-only `setup(seed)` now
+	  delegates to `setup_fleet` with the classic scout-vs-cruiser pairing, so all
+	  existing tests and demos boot unchanged. Deployment placement is a rules
+	  concern: `_deploy_hex` spirals out from the requested hex to the nearest free
+	  legal hex, respecting `map_contains` and the no-stack collision rule. Tests
+	  cover legacy boot, explicit fleets (on-board, no stack, sides/facings),
+	  same-hex nudge, off-board nudge, and an N-v-M roster layout (20 assertions).
+- [x] **Side-based victory in `_check_victory`.** The one true rules change.
+	  `_check_victory` now marks crew-wiped ships destroyed (as before), then
+	  tallies which **sides** still have a live ship and declares `game_over` only
+	  when an entire side is out of action — losing one ship of several no longer
+	  ends the game. The winner is the lone surviving side; a mutual wipeout in the
+	  same resolution emits a draw (`side = -1`). A shared `is_out_of_action(ship)`
+	  predicate (destroyed / grounded / crew-zero) backs new `living_ships(side)`
+	  and `side_alive(side)` queries so UI and AI never re-derive it; an early
+	  GAME_OVER guard stops re-declaration. 1v1 behaviour is unchanged (a one-ship
+	  side empties on that ship's loss). 14 assertions: queries, no-end-on-partial-
+	  loss, full-side wipeout, draw, crew-wipe, and no re-fire.
+- [x] **Multi-ship turn loop in `map_demo`.** The scene now fields a fixed 2-v-2
+	  (your Scout + One-Man Flyer vs an AI Cruiser + Battleship) and the per-phase
+	  loop iterates the player's living ships:
+	  - **ALLOCATE / PLOT / FIRE** are per-ship, driven by a **roster strip** (one
+		button per living player ship) plus clicking a friendly token on the map.
+		Each ship's plan is held in `_alloc`/`_plot_base`/`_fire_choice`+
+		`_fire_targets` so the player can revisit any ship before proceeding.
+		ALLOCATE tracks per-ship commit (Commit Ship → next uncommitted; Begin
+		Plot gated until **every** ship is committed and in budget).
+	  - **MOVE** interleaves through `next_mover`; when the engine hands back a
+		player ship the scene sets it active, highlights *its* `legal_moves_for`,
+		and `_on_move_clicked` executes the awaited ship's move.
+	  - **FIRE target picking**: each mount defaults to the nearest enemy it bears
+		on (engine `fire_preview`); clicking an enemy token retargets the active
+		ship's bearing mounts; reticles mark the chosen targets; `declare_fire`
+		resolves every player ship's picks plus every AI ship's. Driven through a
+		full 2-v-2 battle headless (all phases, decisive end, no runtime errors).
+- [x] **One `ShipAI` per AI ship.** `_bind_engine` builds a `ShipAI.for_ship(def)`
+	  per AI-side ship into `ais`; the loop runs each one's `allocate`/`plot`/
+	  `choose_move`/`choose_fire` against its nearest enemy. (Focus-fire vs. split
+	  across multiple targets stays a future doctrine refinement.)
+- [x] **UI rendering for fleets.** `hex_map` gained `set_active_ship` (rings the
+	  edited ship outside MOVE) and `set_fire_targets` (red reticles on FIRE
+	  targets); ship selection/targeting routes through the existing `hex_clicked`
+	  → `_on_hex_clicked` (own ship selects, enemy retargets in FIRE). The SSD
+	  overlay grew from two fixed panels to one panel **per ship**, rebuilt per
+	  game and scrollable; dead ships stay inspectable (wreck X on the map, sheet
+	  still shown). The selectable-thumbnail/tab styling is left as polish.
+- [x] **Tests (`test_rules.gd`).** A new **Fleets** suite (40 assertions):
+	  `setup_fleet`/`setup_rosters` placement (on-board, no stack, same-hex and
+	  off-board nudge, N-v-M rosters); side-based victory (a side with one of two
+	  ships left has *not* lost; ends only on full-side wipeout; mutual-wipeout
+	  draw; crew-wipe; no re-fire after game over); `living_ships`/`side_alive`
+	  queries; a 4-ship mixed-speed `next_mover` cadence (each ship offered its
+	  exact chart count, all 8 impulses, impulse-1 and impulse-8 mover counts); and
+	  a seeded **2v2 ShipAI battle** through the shared sequencer (5/5 decisive,
+	  invariants hold). `ai_scan.gd` gained an `f` flag for a 2v2 NvM scan
+	  (side-based win split; baseline: red 100% / blue 0%, 0 timeouts, avg ~6
+	  turns — the heavy squadron dominates, the same intended asymmetry as 1v1).
 
 #### F2 — Points-buy fleet composition
 
@@ -585,58 +591,43 @@ is priced automatically (no hand-tuned number to forget), and the formula is
 design note) — the cost only needs to be monotone in the obvious way (a cruiser
 must cost more than a scout) and stable/deterministic.
 
-- [ ] **`ShipDef.point_cost()` — a derived, non-linear cost.** Add a pure
-	  function on `ShipDef` (no stored magic number; an optional
-	  `@export var point_cost_override` may pin a class later if desired). Sum
-	  three capability scores, then bend the curve:
-	  - **Offensive capacity.** Over every gun mount, value
-		`expected_damage_per_turn × reach × arc_coverage`, where expected damage
-		uses the `GunDef` range brackets (`damage` weighted by `to_hit`
-		probability), divided by `reload_turns` (a heavy that fires every third
-		turn is worth less per turn than its single-shot punch), times the arc
-		count (a broadside-and-bow gun is worth more than a fixed bow gun).
-		**Torpedoes** price their burst specially: `is_torpedo` × `armor_piercing`
-		(AP defeats the armor term entirely, so it is valued at full damage) ×
-		finite `ammo` (a 3-shot rack is a fraction of an infinite gun's
-		sustained value, but its alpha strike is weighted up).
-	  - **Damage absorption.** Total `armor` across facings (this is what makes a
-		cruiser expensive), plus buoyancy-tank count (effective hit points before
-		grounding) and the key internals (`ENGINE`, `BRIDGE`, `CREW`,
-		`DAMAGE_CONTROL`) that keep capability online. `MAGAZINE` is a *liability*
-		term (explosion risk) — it may shave cost slightly rather than add.
-	  - **Other metrics.** Mobility and command: `base_max_speed` and
-		`speed_per_engine_crew` (a flyer that can both run fast *and* fight is
-		dear), turn quality from `turn_mode_by_speed` (lower = nimbler = costlier),
-		`PROPELLER`/`RUDDER` boxes, and `CREW` pool size (it powers everything via
-		allocation).
-	  - **Non-linearity (the point of "need not be linear").** Apply convex
-		scaling so concentrated power costs a premium: e.g. raise the offensive
-		and defensive subtotals to an exponent >1 (or add a quadratic cross-term
-		`offense × defense` — a ship that hits hard *and* survives is worth more
-		than the sum, the classic glass-cannon-vs-brick asymmetry). This makes one
-		cruiser cost *more* than the two scouts whose stats it dominates, which is
-		the intended buy-decision tension. Document the exact weights/exponents
-		inline as tunables (a `const` weight block), since this phase's job is the
-		*mechanism*, not the values.
-- [ ] **`FleetBuilder` (rules/, headless).** A pure helper:
-	  `available_classes()` (ids + `display_name` + `point_cost`), validate a
-	  roster against a budget (`total_cost ≤ budget`), and **AI roster
-	  generation** — greedily/randomly fill a budget from the catalog (seeded RNG
-	  for reproducibility) so the computer fields a points-matched fleet. No UI,
-	  no rendering — tests and the AI driver both call it.
-- [ ] **Fleet-builder screen (`ui/`).** A pre-battle scenario screen reachable
-	  from `main_menu` (and the game-over "rematch" path): pick a points budget,
-	  add/remove hulls for the player side with a live "X / budget spent"
-	  readout and the per-class `point_cost` shown on each card; the engine builds
-	  the AI's roster via `FleetBuilder` to the same budget. "Launch" hands the
-	  two rosters to `TurnEngine.setup(fleets)` (F1). Keep a "Quick Battle"
-	  shortcut that skips the builder with a default fleet so the fast path
-	  survives.
-- [ ] **Tests.** `point_cost()` determinism and ordering (cruiser > scout;
-	  adding a gun/armor raises cost; the non-linear term makes one strong hull
-	  cost more than two weak hulls summing to the same raw stats); `FleetBuilder`
-	  budget validation (rejects over-budget rosters) and seeded AI roster
-	  generation (deterministic, within budget, non-empty).
+- [x] **`ShipDef.point_cost()` — a derived, non-linear cost.** Pure function on
+	  `ShipDef` (plus an `@export var point_cost_override` that pins a class when
+	  ≥0). Sums three subtotals from a documented `const COST` tunable block:
+	  - **Offence** — per mount, mean expected damage across the `GunDef` range
+		brackets (`damage` × P(roll ≥ `to_hit`)) × reach (`max_range`) × arc count
+		÷ `(reload_turns+1)`. Torpedoes are valued by an `ap_bonus` (AP defeats the
+		armour term) × a finite-ammo discount `ammo/(ammo+ammo_half)`.
+	  - **Defence** — `armor` sum + buoyancy tanks + the key internals (ENGINE,
+		BRIDGE, CREW, DAMAGE_CONTROL); MAGAZINE carries a *negative* weight
+		(explosion liability).
+	  - **Mobility/command** — `base_max_speed`, `speed_per_engine_crew`, turn
+		nimbleness (`turn_base − avg turn_mode`), PROPELLER+RUDDER, CREW pool.
+	  - **Non-linearity** — convex exponents (1.2) on the offence/defence
+		subtotals + a `cross` offence×defence term, so concentrated power costs a
+		premium. Derived costs: one-man 25 < scout 47 < cruiser 90 < battleship
+		160; a doubled hull costs >2× its half (tested).
+- [x] **`FleetBuilder` (rules/, headless).** `rules/fleet_builder.gd`:
+	  `available_classes()` (id + `display_name` + `point_cost`), `roster_cost`,
+	  `is_valid(roster, budget)` (non-empty AND within budget), `cheapest_cost`,
+	  and `generate_roster(budget, rng)` — greedily-randomly buys affordable hulls
+	  from the catalog under a seeded RNG (deterministic, within budget, non-empty
+	  with a cheapest-hull fallback). Backed by `ShipLibrary.ship_ids()`.
+- [x] **Fleet-builder screen (`ui/`).** `ui/fleet_builder_screen.gd`+`.tscn`,
+	  reachable from `main_menu` ("Build Fleet"). Budget stepper, a hull catalog
+	  with per-class cost + Add, your-roster list with Remove and a live
+	  "Spent: X / budget" readout (red when over), and an auto-generated enemy
+	  roster preview regenerated to the same budget. "Launch" (gated on a valid
+	  roster) hands both rosters to the map via `BattleConfig`; `map_demo` lays
+	  them out with `setup_rosters`. "Quick Battle" / "Quick Engagement" clears
+	  `BattleConfig` and boots the default 2v2 (the fast path survives).
+- [x] **Tests.** A **Points-buy fleets** suite (16 assertions): `point_cost`
+	  determinism + monotone ordering (one-man<scout<cruiser<battleship), adding a
+	  gun/armour raises cost, the non-linear term makes one strong hull cost more
+	  than two half-hulls of the same summed raw stats, override pins; `FleetBuilder`
+	  catalog/`roster_cost`/`is_valid` (rejects over-budget and empty), and seeded
+	  `generate_roster` (deterministic, within budget, non-empty + tiny-budget
+	  fallback).
 
 ## 6. Working agreements for Claude Code sessions
 
