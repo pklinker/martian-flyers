@@ -521,60 +521,66 @@ looks — it lives in setup, the victory rule, the turn-loop drivers, and the UI
 
 #### F1 — Multiple ships per side
 
-- [ ] **Fleet-driven `TurnEngine.setup`.** Replace the hardcoded two-ship
-	  `ships.assign([...])` with `setup(fleets, seed)` where `fleets` is a list of
-	  `{ ship_id, side, hex, facing }` placements (or two `Array[StringName]`
-	  rosters the engine lays out on opposing deployment lines). Keep a
-	  zero-arg/legacy path that builds the current scout-vs-cruiser pairing so
-	  existing tests and the demo boot unchanged until they opt in. Deployment
-	  placement is a rules concern (must respect `map_contains` and not stack —
-	  reuse the no-overlap logic).
-- [ ] **Side-based victory in `_check_victory`.** This is the one true rules
-	  change. Today it ends the game the instant *any* ship is destroyed or
-	  grounded and computes `winner = 1 - s.side`. Rewrite to: mark per-ship
-	  destruction (crew-pool-zero, destroyed, grounded) as it already does, then
-	  declare `game_over` only when **every** ship of a side is out of action.
-	  Compute the surviving side as "the side with ≥1 live ship"; handle the
-	  mutual-wipeout draw (both sides emptied in the same upkeep → emit a draw
-	  result, side = -1). Add a `side_alive(side)` / `living_ships(side)` query so
-	  UI and AI ask the engine rather than re-deriving it.
-- [ ] **Multi-ship turn loop in `map_demo`.** Today the scene hardcodes
-	  `PLAYER`/`AI` as one ship each and walks a single panel. Generalise the
-	  per-phase loop to iterate the player's living ships:
-	  - **ALLOCATE / PLOT / FIRE** become per-ship: an **active-ship selector**
-		(click a token on the map, or a roster strip of SSD tabs) drives which
-		ship the allocation/plot/fire bar is editing; the phase's Confirm gates
-		only when *every* living player ship has a committed allocation/plot/fire.
-		Track committed-ship state so the player can revisit a ship before
-		confirming the phase.
-	  - **MOVE** already interleaves correctly through `next_mover`; the only
-		change is that when the engine hands back a *player* ship the scene must
-		know which one to await a click for (it already gets the `ShipState`),
-		and highlight that ship's `legal_moves_for`.
-	  - **FIRE target picking** stops being trivial: each bearing gun needs a
-		target among the live enemies. Default each mount to the nearest enemy in
-		arc/range (engine query), let the player retarget by clicking an enemy
-		token; resolve through the existing `declare_fire` queue. Greying/`reason`
-		from `fire_preview` is per (mount, target).
-- [ ] **One `ShipAI` per AI ship.** The driver builds a `ShipAI.for_ship(def)`
-	  per AI-side ship and runs its `allocate`/`plot`/`choose_move`/`choose_fire`
-	  against the nearest enemy (already implemented). Optional, called out for
-	  later: `choose_fire` currently fires every bearing gun at one `enemy`;
-	  spreading mounts across multiple targets (focus-fire vs. split) is a fleet
-	  doctrine refinement, not required for a correct first cut.
-- [ ] **UI rendering for fleets.** `hex_map` already draws all `engine.ships`
-	  with facing arrows, side colors, the active ring, and wreck X's — extend it
-	  to (a) emit a `ship_clicked(ship)` for own-ship selection and enemy
-	  targeting, and (b) draw a target marker on the FIRE target. The SSD overlay
-	  grows from two fixed panels to a **roster**: a strip of selectable
-	  thumbnails/tabs (one per living ship per side), the selected one shown full
-	  in `ssd_panel`; dead ships greyed but still inspectable.
-- [ ] **Tests (`test_rules.gd`).** Fleet `setup` placement (on-board, no stack);
-	  side-based victory (a side with one live ship of three has *not* lost; game
-	  ends only on full-side wipeout; mutual-wipeout draw); `living_ships`/
-	  `side_alive` queries; a multi-impulse `next_mover` cadence with 4+ ships at
-	  mixed speeds; and a seeded **2v2 ShipAI battle** (decisive, no deadlock,
-	  invariants hold). Extend `ai_scan.gd` to run NvM scans.
+- [x] **Fleet-driven `TurnEngine.setup`.** `setup_fleet(fleets, seed)` takes a
+	  list of `{ ship_id, side, hex, facing }` placements; `setup_rosters(side0,
+	  side1, seed)` is the convenience that lays two `Array[StringName]` rosters on
+	  opposing deployment lines. The legacy zero-arg/seed-only `setup(seed)` now
+	  delegates to `setup_fleet` with the classic scout-vs-cruiser pairing, so all
+	  existing tests and demos boot unchanged. Deployment placement is a rules
+	  concern: `_deploy_hex` spirals out from the requested hex to the nearest free
+	  legal hex, respecting `map_contains` and the no-stack collision rule. Tests
+	  cover legacy boot, explicit fleets (on-board, no stack, sides/facings),
+	  same-hex nudge, off-board nudge, and an N-v-M roster layout (20 assertions).
+- [x] **Side-based victory in `_check_victory`.** The one true rules change.
+	  `_check_victory` now marks crew-wiped ships destroyed (as before), then
+	  tallies which **sides** still have a live ship and declares `game_over` only
+	  when an entire side is out of action — losing one ship of several no longer
+	  ends the game. The winner is the lone surviving side; a mutual wipeout in the
+	  same resolution emits a draw (`side = -1`). A shared `is_out_of_action(ship)`
+	  predicate (destroyed / grounded / crew-zero) backs new `living_ships(side)`
+	  and `side_alive(side)` queries so UI and AI never re-derive it; an early
+	  GAME_OVER guard stops re-declaration. 1v1 behaviour is unchanged (a one-ship
+	  side empties on that ship's loss). 14 assertions: queries, no-end-on-partial-
+	  loss, full-side wipeout, draw, crew-wipe, and no re-fire.
+- [x] **Multi-ship turn loop in `map_demo`.** The scene now fields a fixed 2-v-2
+	  (your Scout + One-Man Flyer vs an AI Cruiser + Battleship) and the per-phase
+	  loop iterates the player's living ships:
+	  - **ALLOCATE / PLOT / FIRE** are per-ship, driven by a **roster strip** (one
+		button per living player ship) plus clicking a friendly token on the map.
+		Each ship's plan is held in `_alloc`/`_plot_base`/`_fire_choice`+
+		`_fire_targets` so the player can revisit any ship before proceeding.
+		ALLOCATE tracks per-ship commit (Commit Ship → next uncommitted; Begin
+		Plot gated until **every** ship is committed and in budget).
+	  - **MOVE** interleaves through `next_mover`; when the engine hands back a
+		player ship the scene sets it active, highlights *its* `legal_moves_for`,
+		and `_on_move_clicked` executes the awaited ship's move.
+	  - **FIRE target picking**: each mount defaults to the nearest enemy it bears
+		on (engine `fire_preview`); clicking an enemy token retargets the active
+		ship's bearing mounts; reticles mark the chosen targets; `declare_fire`
+		resolves every player ship's picks plus every AI ship's. Driven through a
+		full 2-v-2 battle headless (all phases, decisive end, no runtime errors).
+- [x] **One `ShipAI` per AI ship.** `_bind_engine` builds a `ShipAI.for_ship(def)`
+	  per AI-side ship into `ais`; the loop runs each one's `allocate`/`plot`/
+	  `choose_move`/`choose_fire` against its nearest enemy. (Focus-fire vs. split
+	  across multiple targets stays a future doctrine refinement.)
+- [x] **UI rendering for fleets.** `hex_map` gained `set_active_ship` (rings the
+	  edited ship outside MOVE) and `set_fire_targets` (red reticles on FIRE
+	  targets); ship selection/targeting routes through the existing `hex_clicked`
+	  → `_on_hex_clicked` (own ship selects, enemy retargets in FIRE). The SSD
+	  overlay grew from two fixed panels to one panel **per ship**, rebuilt per
+	  game and scrollable; dead ships stay inspectable (wreck X on the map, sheet
+	  still shown). The selectable-thumbnail/tab styling is left as polish.
+- [x] **Tests (`test_rules.gd`).** A new **Fleets** suite (40 assertions):
+	  `setup_fleet`/`setup_rosters` placement (on-board, no stack, same-hex and
+	  off-board nudge, N-v-M rosters); side-based victory (a side with one of two
+	  ships left has *not* lost; ends only on full-side wipeout; mutual-wipeout
+	  draw; crew-wipe; no re-fire after game over); `living_ships`/`side_alive`
+	  queries; a 4-ship mixed-speed `next_mover` cadence (each ship offered its
+	  exact chart count, all 8 impulses, impulse-1 and impulse-8 mover counts); and
+	  a seeded **2v2 ShipAI battle** through the shared sequencer (5/5 decisive,
+	  invariants hold). `ai_scan.gd` gained an `f` flag for a 2v2 NvM scan
+	  (side-based win split; baseline: red 100% / blue 0%, 0 timeouts, avg ~6
+	  turns — the heavy squadron dominates, the same intended asymmetry as 1v1).
 
 #### F2 — Points-buy fleet composition
 

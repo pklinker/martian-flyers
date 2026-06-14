@@ -1,7 +1,9 @@
 extends SceneTree
 ## Throwaway balance probe: run many ShipAI-vs-ShipAI battles on the engine's
 ## bounded map and report win split + timeouts. Not part of the suite.
-##   Godot --headless --path . -s res://tests/ai_scan.gd -- 200
+##   Godot --headless --path . -s res://tests/ai_scan.gd -- 200      # 1v1 scan
+##   Godot --headless --path . -s res://tests/ai_scan.gd -- 1 v      # trace one 1v1
+##   Godot --headless --path . -s res://tests/ai_scan.gd -- 200 f    # 2v2 fleet scan
 ##
 ## The playfield is whatever TurnEngine defines (currently the large 48x48 open
 ## field with centred starts) — this tool defers to engine.legal_moves_for so it
@@ -14,6 +16,9 @@ func _initialize() -> void:
 	var args := OS.get_cmdline_user_args()
 	var n: int = int(args[0]) if args.size() > 0 else 200
 	var trace := args.size() > 1 and args[1] == "v"
+	if args.size() > 1 and args[1] == "f":
+		_fleet_scan(n)
+		return
 	var scout_wins := 0
 	var cruiser_wins := 0
 	var timeouts := 0
@@ -74,3 +79,81 @@ func _initialize() -> void:
 		n, scout_wins, 100.0 * scout_wins / n, cruiser_wins, 100.0 * cruiser_wins / n,
 		timeouts, float(turn_total) / n])
 	quit(0)
+
+
+## NvM scan: a 2-v-2 (Scout + One-Man Flyer vs Cruiser + Battleship) per seed,
+## reporting the side-based win split. Same engine, just fleets and side victory.
+func _fleet_scan(n: int) -> void:
+	var blue := 0
+	var red := 0
+	var draws := 0
+	var timeouts := 0
+	var turn_total := 0
+	for seed_i in range(1, n + 1):
+		var engine := TurnEngine.new()
+		engine.setup_rosters(
+			[&"helium_scout", &"one_man_flyer"],
+			[&"zodanga_cruiser", &"helium_battleship"], seed_i * 7919 + 1)
+		var winner := _drive_fleet(engine)
+		turn_total += engine.turn_number
+		match winner:
+			0: blue += 1
+			1: red += 1
+			-1: draws += 1
+			_: timeouts += 1
+	print("fleet battles: %d   blue: %d (%.0f%%)   red: %d (%.0f%%)   draws: %d   timeouts: %d   avg turns: %.1f" % [
+		n, blue, 100.0 * blue / n, red, 100.0 * red / n, draws, timeouts, float(turn_total) / n])
+	quit(0)
+
+
+## Drive one fleet battle through the engine's shared sequencer with a ShipAI per
+## hull. Returns the winning side (0/1), -1 for a draw, or -2 if it hit the cap.
+func _drive_fleet(engine: TurnEngine) -> int:
+	var brains := {}
+	for s in engine.ships:
+		brains[s] = ShipAI.for_ship(s.def)
+	# Convention #2: a lambda can't write back to a captured local, so the winner
+	# is stashed in a Dictionary the signal handler mutates.
+	var result := { "winner": -2 }
+	engine.game_over.connect(func(side: int, _r: String) -> void: result["winner"] = side)
+	while engine.phase != TurnEngine.Phase.GAME_OVER and engine.turn_number <= MAX_TURNS:
+		for s in engine.ships:
+			if not engine.is_out_of_action(s):
+				brains[s].allocate(engine, s)
+		for s in engine.ships:
+			if not engine.is_out_of_action(s):
+				brains[s].plot(engine, s)
+		engine.begin_movement()
+		while true:
+			var s := engine.next_mover()
+			if s == null:
+				break
+			var moves := engine.legal_moves_for(s)
+			if not moves.is_empty():
+				engine.execute_move(s, brains[s].choose_move(engine, s, moves))
+		for s in engine.ships:
+			if engine.is_out_of_action(s):
+				continue
+			var enemy := _fleet_enemy(engine, s)
+			if enemy == null:
+				continue
+			for mi in brains[s].choose_fire(s, enemy):
+				engine.declare_fire(s, mi, enemy)
+		engine.resolve_fire_phase()
+		if engine.phase == TurnEngine.Phase.GAME_OVER:
+			break
+		engine.run_upkeep()
+	return int(result["winner"])
+
+
+func _fleet_enemy(engine: TurnEngine, s: ShipState) -> ShipState:
+	var best: ShipState = null
+	var best_d := 1 << 30
+	for o in engine.ships:
+		if o.side == s.side or engine.is_out_of_action(o):
+			continue
+		var d := HexMath.distance(s.hex, o.hex)
+		if d < best_d:
+			best_d = d
+			best = o
+	return best

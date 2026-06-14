@@ -26,6 +26,7 @@ const GRID := Color(0.45, 0.38, 0.28, 0.55)
 const HIGHLIGHT := Color(0.25, 0.60, 0.25, 0.45)
 const HIGHLIGHT_EDGE := Color(0.15, 0.45, 0.15)
 const ACTIVE_RING := Color(0.95, 0.75, 0.15)
+const TARGET_RETICLE := Color(0.85, 0.18, 0.15, 0.9)
 const SIDE_COLORS: Array[Color] = [Color(0.16, 0.32, 0.62), Color(0.62, 0.16, 0.13)]
 const WRECK := Color(0.35, 0.32, 0.30)
 
@@ -37,6 +38,10 @@ const FLASH_BOOM := Color(0.95, 0.30, 0.12)     # destruction / magazine blast
 var engine: TurnEngine
 var highlight_moves: Array[Dictionary] = []
 var active_ship: ShipState
+
+## Hexes the active ship's chosen guns are currently aimed at (FIRE phase). Pure
+## presentation — drawn as target reticles so the player sees who they'll shoot.
+var fire_targets: Array[Vector2i] = []
 
 var _origin := Vector2.ZERO
 
@@ -65,6 +70,16 @@ func set_highlights(moves: Array[Dictionary], for_ship: ShipState) -> void:
 
 func clear_highlights() -> void:
 	highlight_moves = []
+	queue_redraw()
+
+## Mark which ship the per-ship phase bars (allocate/plot/fire) are editing, so
+## the player sees the active flyer ringed even when there are no move highlights.
+func set_active_ship(s: ShipState) -> void:
+	active_ship = s
+	queue_redraw()
+
+func set_fire_targets(hexes: Array[Vector2i]) -> void:
+	fire_targets = hexes
 	queue_redraw()
 
 
@@ -270,6 +285,17 @@ func _draw() -> void:
 	# Ships
 	for s in engine.ships:
 		_draw_ship(font, s)
+
+	# Fire-target reticles: a red ring + crosshair over each enemy the active
+	# ship's chosen guns are aimed at this FIRE phase.
+	for hex in fire_targets:
+		var c := hex_to_pixel(hex)
+		var rad := hex_size * 0.78
+		draw_arc(c, rad, 0.0, TAU, 24, TARGET_RETICLE, 2.0)
+		draw_line(c + Vector2(-rad, 0), c + Vector2(-rad * 0.4, 0), TARGET_RETICLE, 2.0)
+		draw_line(c + Vector2(rad, 0), c + Vector2(rad * 0.4, 0), TARGET_RETICLE, 2.0)
+		draw_line(c + Vector2(0, -rad), c + Vector2(0, -rad * 0.4), TARGET_RETICLE, 2.0)
+		draw_line(c + Vector2(0, rad), c + Vector2(0, rad * 0.4), TARGET_RETICLE, 2.0)
 
 	# Combat effects, on top of everything (streaks and bursts in the air).
 	_draw_effects()
