@@ -14,7 +14,7 @@ extends Control
 ## All rules live in the engine; this scene is choreography. Victory is decided by
 ## the engine on a side basis (a fleet loses only when its last ship is out).
 
-enum DemoPhase { ALLOCATE, PLOT, MOVE, FIRE, OVER }
+enum DemoPhase { DEPLOY, ALLOCATE, PLOT, MOVE, FIRE, OVER }
 
 const PLAYER_SIDE := 0
 const AI_SIDE := 1
@@ -47,9 +47,16 @@ var game_over_detail: Label
 var roster_bar: HBoxContainer
 
 # Phase bars (only one visible at a time, beneath the persistent top bar).
+var deploy_bar: HBoxContainer    # pre-game placement: rotate / auto-place / begin
 var alloc_bar: VBoxContainer     # Crew row on top, Stats + Action row below
 var plot_bar: HBoxContainer
 var fire_bar: VBoxContainer       # target row on top, gun chips wrapping below
+
+# Deploy-bar widgets (built once).
+var deploy_begin_btn: Button
+var deploy_status: Label          # "Placing <ship> · facing <dir>"
+# Each player ship's position/facing on entering DEPLOY, so Auto-Place can reset.
+var _deploy_initial: Dictionary = {}
 
 # Plot-bar widgets (built once).
 var speed_label: Label
@@ -136,6 +143,19 @@ func _build_ui() -> void:
 	top_v.add_child(roster_bar)
 
 	# Row 3: the active phase's configuration bar (only one shown at a time).
+	# Pre-game deployment: rotate the active ship, reset the line, or commit.
+	deploy_bar = HBoxContainer.new()
+	deploy_bar.add_theme_constant_override("separation", 8)
+	top_v.add_child(deploy_bar)
+	deploy_status = UiTheme.label("", UiTheme.COL_TEXT, 15, true)
+	deploy_status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	deploy_status.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	deploy_bar.add_child(deploy_status)
+	_add_button(deploy_bar, "◀ Rotate", _on_deploy_rotate.bind(-1), "stepper")
+	_add_button(deploy_bar, "Rotate ▶", _on_deploy_rotate.bind(1), "stepper")
+	_add_button(deploy_bar, "Auto-Place", _on_deploy_auto, "system")
+	deploy_begin_btn = _add_button(deploy_bar, "Begin Battle  ▶", _on_begin_battle, "primary")
+
 	# A VBox: the Crew toggles get their own full-width row, with the Stats and
 	# Action sub-panels on a second row beneath them.
 	alloc_bar = VBoxContainer.new()
@@ -319,7 +339,9 @@ func _add_button(parent: Control, label: String, handler: Callable, kind := "neu
 
 
 func _show_bar(ph: DemoPhase) -> void:
-	roster_bar.visible = ph == DemoPhase.ALLOCATE or ph == DemoPhase.PLOT or ph == DemoPhase.FIRE
+	roster_bar.visible = ph == DemoPhase.DEPLOY or ph == DemoPhase.ALLOCATE \
+			or ph == DemoPhase.PLOT or ph == DemoPhase.FIRE
+	deploy_bar.visible = ph == DemoPhase.DEPLOY
 	alloc_bar.visible = ph == DemoPhase.ALLOCATE
 	plot_bar.visible = ph == DemoPhase.PLOT
 	fire_bar.visible = ph == DemoPhase.FIRE
@@ -353,7 +375,7 @@ func _new_game() -> void:
 	_fire_choice = {}
 	log_box.clear()
 	log_box.append_text("Engagement over the dead sea bottom. You command the blue squadron.\n")
-	_enter_allocate()
+	_enter_deploy()
 
 
 ## Adopt `e` as the live engine: wire its signals, build an AI for every enemy
@@ -492,6 +514,8 @@ func _rebuild_roster() -> void:
 func _roster_label(ps: ShipState) -> String:
 	var disp := ps.def.display_name
 	match phase:
+		DemoPhase.DEPLOY:
+			return "%s  ·  %s" % [disp, _facing_name(ps.facing)]
 		DemoPhase.ALLOCATE:
 			var done := _alloc.has(ps) and bool(_alloc[ps].get("committed", false))
 			return "%s%s" % [disp, "  ✓" if done else ""]
@@ -510,6 +534,9 @@ func _select_ship(s: ShipState) -> void:
 	_active = s
 	map.set_active_ship(s)
 	match phase:
+		DemoPhase.DEPLOY:
+			map.center_on(s.hex)
+			_refresh_deploy()
 		DemoPhase.ALLOCATE:
 			_load_active_alloc()
 		DemoPhase.PLOT:
@@ -518,6 +545,96 @@ func _select_ship(s: ShipState) -> void:
 			_rebuild_fire_bar()
 			_update_fire_markers()
 	_rebuild_roster()
+
+
+# --- DEPLOY ----------------------------------------------------------------
+# Pre-game placement. The fleet is already laid out on the default lines (the
+# engine guarantees legal spots); here the player may relocate and re-face their
+# own ships inside the deployment zone before the first turn begins. The enemy
+# fleet is already placed and left alone. Skipped on load/resume (those restore
+# real positions and re-open ALLOCATE directly).
+
+func _enter_deploy() -> void:
+	phase = DemoPhase.DEPLOY
+	map.clear_highlights()
+	map.set_fire_targets([])
+	# Remember where each ship started so Auto-Place can restore the line.
+	_deploy_initial = {}
+	for ps in _players():
+		_deploy_initial[ps] = { "hex": ps.hex, "facing": ps.facing }
+	_active = _players()[0]
+	map.set_active_ship(_active)
+	# Frame the whole engagement so the player can see the enemy line (and judge
+	# the separation gap), not just their own ship.
+	map.frame_ships()
+	_rebuild_roster()
+	_show_bar(DemoPhase.DEPLOY)
+	_refresh_deploy()
+
+
+## Re-tint the legal deploy hexes for the active ship, refresh the status line and
+## re-gate Begin Battle. Called on entry, on selecting a ship, and after any
+## move/rotate.
+func _refresh_deploy() -> void:
+	if _active != null:
+		map.set_deploy_highlights(engine.legal_deploy_hexes(PLAYER_SIDE, _active))
+		deploy_status.text = "Placing %s · facing %s" % [
+				_active.def.display_name, _facing_name(_active.facing)]
+	else:
+		map.set_deploy_highlights([])
+		deploy_status.text = ""
+	var ready := _all_player_deployed_legally()
+	deploy_begin_btn.disabled = not ready
+	# The phase line doubles as the hint: the how-to while ready, a reason while not.
+	if ready:
+		phase_label.text = "Deployment — pick a ship, click a glowing hex to move it, " \
+				+ "Rotate to turn, then Begin Battle"
+	else:
+		phase_label.text = "Deployment — a ship is out of its zone or too near the " \
+				+ "enemy; move it onto a glowing hex before Begin Battle"
+
+
+## Compass name for a facing (0 = north, clockwise), for the deploy status line.
+const _FACING_NAMES := ["N", "NE", "SE", "S", "SW", "NW"]
+func _facing_name(facing: int) -> String:
+	return _FACING_NAMES[((facing % 6) + 6) % 6]
+
+
+## Every living player ship sits on a hex that is still a legal deployment (always
+## true while ships only move via place_ship, but it guards the commit either way).
+func _all_player_deployed_legally() -> bool:
+	for ps in _players():
+		if not engine.is_legal_deploy_hex(ps.hex, PLAYER_SIDE, ps):
+			return false
+	return true
+
+
+## Turn the active ship in place during deployment (facing is free of the zone
+## rules, so this never changes which hexes are legal — just redraw).
+func _on_deploy_rotate(dir: int) -> void:
+	if _active == null:
+		return
+	_active.facing = ((_active.facing + dir) % 6 + 6) % 6
+	_refresh_deploy()
+	_rebuild_roster()
+
+
+## Reset every player ship to the position/facing it had when deployment opened.
+func _on_deploy_auto() -> void:
+	for ps in _players():
+		if _deploy_initial.has(ps):
+			ps.hex = _deploy_initial[ps]["hex"]
+			ps.facing = _deploy_initial[ps]["facing"]
+	_refresh_deploy()
+	_rebuild_roster()
+
+
+## Lock in the deployment and start the first turn.
+func _on_begin_battle() -> void:
+	if not _all_player_deployed_legally():
+		return
+	map.set_deploy_highlights([])
+	_enter_allocate()
 
 
 # --- ALLOCATE --------------------------------------------------------------
@@ -1056,6 +1173,9 @@ func _on_resolve_fire() -> void:
 ## A bare hex click (not a move highlight): in ALLOCATE/PLOT/FIRE, clicking one
 ## of your ships selects it; in FIRE, clicking an enemy retargets the active ship.
 func _on_hex_clicked(hex: Vector2i) -> void:
+	if phase == DemoPhase.DEPLOY:
+		_on_deploy_hex_clicked(hex)
+		return
 	var s := _ship_at(hex)
 	if s == null:
 		return
@@ -1064,6 +1184,20 @@ func _on_hex_clicked(hex: Vector2i) -> void:
 		_select_ship(s)
 	elif s.side == AI_SIDE and phase == DemoPhase.FIRE:
 		_retarget_active(s)
+
+
+## DEPLOY click: clicking one of your ships selects it; clicking an empty legal
+## hex moves the active ship there (keeping its current facing). Clicks on the
+## enemy or on an illegal hex are ignored.
+func _on_deploy_hex_clicked(hex: Vector2i) -> void:
+	var s := _ship_at(hex)
+	if s != null:
+		if s.side == PLAYER_SIDE:
+			_select_ship(s)
+		return
+	if _active != null and engine.place_ship(_active, hex, _active.facing):
+		_refresh_deploy()
+		_rebuild_roster()
 
 
 ## Mount indices whose toggle in `bar` is currently on (works for any BaseButton

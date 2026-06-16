@@ -25,6 +25,8 @@ const SEA_BOTTOM := Color(0.87, 0.80, 0.66)   # dead sea bottom ochre
 const GRID := Color(0.45, 0.38, 0.28, 0.55)
 const HIGHLIGHT := Color(0.25, 0.60, 0.25, 0.45)
 const HIGHLIGHT_EDGE := Color(0.15, 0.45, 0.15)
+const DEPLOY_ZONE := Color(0.20, 0.45, 0.70, 0.22)   # legal deploy hexes (pre-game)
+const DEPLOY_ZONE_EDGE := Color(0.30, 0.55, 0.85, 0.55)
 const ACTIVE_RING := Color(0.95, 0.75, 0.15)
 const TARGET_RETICLE := Color(0.85, 0.18, 0.15, 0.9)
 const SIDE_COLORS: Array[Color] = [Color(0.16, 0.32, 0.62), Color(0.62, 0.16, 0.13)]
@@ -38,6 +40,11 @@ const FLASH_BOOM := Color(0.95, 0.30, 0.12)     # destruction / magazine blast
 var engine: TurnEngine
 var highlight_moves: Array[Dictionary] = []
 var active_ship: ShipState
+
+## Legal deployment hexes for the pre-game placement phase. A separate channel
+## from highlight_moves (which is move-shaped and means "legal moves this
+## impulse") so the two never interfere. Drawn as a translucent zone tint.
+var deploy_hexes: Array[Vector2i] = []
 
 ## Hexes the active ship's chosen guns are currently aimed at (FIRE phase). Pure
 ## presentation — drawn as target reticles so the player sees who they'll shoot.
@@ -83,6 +90,11 @@ func set_highlights(moves: Array[Dictionary], for_ship: ShipState) -> void:
 
 func clear_highlights() -> void:
 	highlight_moves = []
+	queue_redraw()
+
+## Tint the legal deployment hexes (pre-game). Pass an empty array to clear.
+func set_deploy_highlights(hexes: Array[Vector2i]) -> void:
+	deploy_hexes = hexes
 	queue_redraw()
 
 ## Mark which ship the per-ship phase bars (allocate/plot/fire) are editing, so
@@ -141,8 +153,15 @@ func contains(hex: Vector2i) -> bool:
 
 func _ready() -> void:
 	clip_contents = true                  # keep the scrolling field inside the map rect
-	resized.connect(queue_redraw)
+	resized.connect(_on_resized)
 	set_process(false)                    # only tick while effects are alive
+
+
+## A larger view can outrun the previous clamp, exposing void at an edge — re-pin
+## the camera to the board before redrawing.
+func _on_resized() -> void:
+	_clamp_camera()
+	queue_redraw()
 
 
 # ---------------------------------------------------------------------------
@@ -213,22 +232,60 @@ func frame_ships() -> void:
 	hex_size = clampf(minf(size.x / w_units, size.y / h_units), MIN_HEX, DEFAULT_HEX)
 	_cam_center = (lo + hi) * 0.5
 	_needs_initial_frame = false
+	_clamp_camera()
 	queue_redraw()
 
 ## Hold `hex` at the centre of the view (used to follow the active mover).
 func center_on(hex: Vector2i) -> void:
 	_cam_center = HexMath.to_cartesian(hex)
+	_clamp_camera()
 	queue_redraw()
 
 ## Pan by a pixel delta (drag / two-finger scroll): move the world under the view.
 func pan(delta_px: Vector2) -> void:
 	_cam_center -= delta_px / hex_size
+	_clamp_camera()
 	queue_redraw()
 
 ## Zoom about the view centre by a multiplicative factor (wheel / pinch).
 func zoom_by(factor: float) -> void:
 	hex_size = clampf(hex_size * factor, MIN_HEX, MAX_HEX)
+	_clamp_camera()
 	queue_redraw()
+
+## Keep the view over the playfield: the field never scrolls off into the empty
+## sea-bottom void. The camera centre is held so the view stays inside the board's
+## cartesian bounds (plus a one-hex margin); on any axis where the board is
+## smaller than the view, the board is centred instead.
+func _clamp_camera() -> void:
+	if size.x <= 0.0 or size.y <= 0.0 or hex_size <= 0.0:
+		return
+	var b := _board_bounds()
+	var lo := b.position - Vector2(HALF_W, HALF_H)
+	var hi := b.end + Vector2(HALF_W, HALF_H)
+	var half := size * 0.5 / hex_size
+	for axis in 2:
+		if hi[axis] - lo[axis] <= 2.0 * half[axis]:
+			_cam_center[axis] = (lo[axis] + hi[axis]) * 0.5
+		else:
+			_cam_center[axis] = clampf(_cam_center[axis], lo[axis] + half[axis], hi[axis] - half[axis])
+
+## Cartesian bounding box of the whole playfield. The board is a sheared
+## rectangle in axial space, so its cartesian extent is found from the corner
+## columns' top/bottom rows (an even and an odd column capture the half-hex
+## y-shear at both ends).
+func _board_bounds() -> Rect2:
+	var lo := Vector2(INF, INF)
+	var hi := -lo
+	for q in [0, 1, cols - 2, cols - 1]:
+		if q < 0 or q >= cols:
+			continue
+		var off := row_offset(q)
+		for r in [off, off + rows - 1]:
+			var c := HexMath.to_cartesian(Vector2i(q, r))
+			lo = lo.min(c)
+			hi = hi.max(c)
+	return Rect2(lo, hi - lo)
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +385,16 @@ func _draw() -> void:
 					TerrainDef.display_name(t).substr(0, 1),
 					HORIZONTAL_ALIGNMENT_LEFT, -1, 10,
 					Color(0.12, 0.08, 0.03, 0.90))
+
+	# Deployment-zone tint (pre-game placement): legal deploy hexes, beneath the
+	# legal-move highlights and ships.
+	for hex in deploy_hexes:
+		var c := hex_to_pixel(hex)
+		if c.x < -cull or c.x > size.x + cull or c.y < -cull or c.y > size.y + cull:
+			continue
+		draw_colored_polygon(_corners(c), DEPLOY_ZONE)
+		var dpts := _corners(c)
+		draw_polyline(dpts + PackedVector2Array([dpts[0]]), DEPLOY_ZONE_EDGE, 1.0)
 
 	# Legal-move highlights
 	for m in highlight_moves:

@@ -43,6 +43,19 @@ var terrain: Dictionary = {}
 var map_cols: int = 48
 var map_rows: int = 48
 
+## Deployment (pre-game placement). A player deploys only inside a band on their
+## own side of the field and never within striking distance of the enemy, so no
+## fleet can open the engagement on top of the other. Both are rules — validated
+## in is_legal_deploy_hex — not UI hints.
+##   DEPLOY_ZONE_COLS: width of the player's band, measured from the west edge
+##                     (columns 0 .. DEPLOY_ZONE_COLS-1) — the western half of the
+##                     default 48-wide field. The enemy line deploys east of
+##                     centre, so this keeps the player on their own side.
+##   DEPLOY_MIN_SEPARATION: the smallest legal hex distance between any player
+##                     ship and any enemy ship at deployment.
+const DEPLOY_ZONE_COLS := 24
+const DEPLOY_MIN_SEPARATION := 10
+
 ## Movement sequencer state, owned here so every client (UI, AI, tests) shares
 ## one impulse sequence. Driven via begin_movement()/next_mover().
 var current_impulse: int = 0
@@ -131,6 +144,72 @@ func _hex_ring(center: Vector2i, radius: int) -> Array[Vector2i]:
 			if HexMath.distance(center, h) == radius:
 				out.append(h)
 	return out
+
+
+# ---------------------------------------------------------------------------
+# Deployment: pre-game placement of one side's ships. The fleet is already
+# created (setup_fleet/setup_rosters put every ship in a valid initial spot);
+# these let a client relocate a ship within the legal zone before the first
+# turn. Pure rules — no rendering, no phase change.
+# ---------------------------------------------------------------------------
+
+## May `side` legally deploy a ship onto `hex`? All must hold: the hex is on the
+## board, inside that side's deployment band, unoccupied, and at least
+## DEPLOY_MIN_SEPARATION from every living enemy ship. `moving_ship` (the ship
+## being relocated, if any) is ignored by the occupancy test so re-dropping a
+## ship on or beside its own current hex is allowed.
+func is_legal_deploy_hex(hex: Vector2i, side: int, moving_ship: ShipState = null) -> bool:
+	if not map_contains(hex):
+		return false
+	if not _in_deploy_band(hex, side):
+		return false
+	for s in ships:
+		if s == moving_ship:
+			continue
+		if s.hex == hex and not s.is_destroyed:
+			return false
+		if s.side != side and not s.is_destroyed \
+				and HexMath.distance(hex, s.hex) < DEPLOY_MIN_SEPARATION:
+			return false
+	return true
+
+
+## Every legal deploy hex for `side` (for a client to highlight). `moving_ship`
+## is excluded from occupancy as in is_legal_deploy_hex. Bounded scan over the
+## side's band columns — cheap (band width x map_rows).
+func legal_deploy_hexes(side: int, moving_ship: ShipState = null) -> Array[Vector2i]:
+	var out: Array[Vector2i] = []
+	for q in _deploy_cols(side):
+		var off := map_row_offset(q)
+		for r in range(off, off + map_rows):
+			var hex := Vector2i(q, r)
+			if is_legal_deploy_hex(hex, side, moving_ship):
+				out.append(hex)
+	return out
+
+
+## Relocate an already-deployed `ship` to `hex`/`facing`. Returns false and
+## leaves the ship untouched if the hex is not a legal deploy hex for its side.
+func place_ship(ship: ShipState, hex: Vector2i, facing: int) -> bool:
+	if not is_legal_deploy_hex(hex, ship.side, ship):
+		return false
+	ship.hex = hex
+	ship.facing = ((facing % 6) + 6) % 6
+	return true
+
+
+## The column range a side deploys in. Side 0 holds the western band; side 1 the
+## mirrored eastern band. Returned as a half-open [from, to) range.
+func _deploy_cols(side: int) -> Array:
+	if side == 0:
+		return range(0, DEPLOY_ZONE_COLS)
+	return range(map_cols - DEPLOY_ZONE_COLS, map_cols)
+
+
+func _in_deploy_band(hex: Vector2i, side: int) -> bool:
+	if side == 0:
+		return hex.x >= 0 and hex.x < DEPLOY_ZONE_COLS
+	return hex.x >= map_cols - DEPLOY_ZONE_COLS and hex.x < map_cols
 
 
 func _place_terrain() -> void:

@@ -74,6 +74,7 @@ func _init() -> void:
 
 	_suite("Fleets")
 	_test_fleet_setup()
+	_test_deployment_rules()
 	_test_side_victory()
 	_test_fleet_cadence()
 	_test_fleet_ai_battle()
@@ -1076,6 +1077,88 @@ func _test_fleet_setup() -> void:
 			rosters_on_board = false
 	_check(rosters_on_board, "every roster-deployed ship is on the board")
 	_check(_no_ship_stacks(rosters), "no two roster-deployed ships share a hex")
+
+
+func _test_deployment_rules() -> void:
+	# A 1-v-1 with the player (side 0) west and the enemy parked deep in the east.
+	var e := TurnEngine.new()
+	e.setup_fleet([
+		{ "ship_id": &"helium_scout", "side": 0, "hex": Vector2i(6, 12), "facing": 1 },
+		{ "ship_id": &"zodanga_cruiser", "side": 1, "hex": Vector2i(40, 12), "facing": 4 },
+	], 99)
+	var player := e.ships[0]
+
+	# A clean western hex, well clear of the enemy, is legal.
+	_check(e.is_legal_deploy_hex(Vector2i(8, 12), 0),
+			"clean hex inside the western band, far from the enemy, is legal")
+
+	# Off-board is rejected.
+	_check(not e.is_legal_deploy_hex(Vector2i(-3, 12), 0),
+			"off-board deploy hex is rejected")
+
+	# Outside the band (eastern half) is rejected even with no enemy nearby.
+	_check(not e.is_legal_deploy_hex(Vector2i(TurnEngine.DEPLOY_ZONE_COLS, 12), 0),
+			"hex past the deploy band is rejected for side 0")
+
+	# Occupied by another (non-moving) ship is rejected; the same hex is fine when
+	# that very ship is the one being moved.
+	var p2 := ShipState.create(ShipLibrary.ship(&"one_man_flyer"), 0, Vector2i(8, 14), 1)
+	e.ships.append(p2)
+	_check(not e.is_legal_deploy_hex(Vector2i(8, 14), 0),
+			"hex occupied by another ship is rejected")
+	_check(e.is_legal_deploy_hex(Vector2i(8, 14), 0, p2),
+			"the moving ship does not collide with its own current hex")
+	e.ships.erase(p2)
+
+	# Within the minimum separation of an enemy is rejected; one hex beyond is ok.
+	# Place the enemy just past the band so both test hexes fall inside the band
+	# and only the separation rule decides them.
+	var wide := TurnEngine.new()
+	wide.setup_fleet([
+		{ "ship_id": &"helium_scout", "side": 0, "hex": Vector2i(2, 12), "facing": 1 },
+		{ "ship_id": &"zodanga_cruiser", "side": 1,
+			"hex": Vector2i(TurnEngine.DEPLOY_ZONE_COLS + 2, 12), "facing": 4 },
+	], 7)
+	var foe := wide.ships[1]
+	var inside := foe.hex - Vector2i(TurnEngine.DEPLOY_MIN_SEPARATION - 1, 0)
+	var beyond := foe.hex - Vector2i(TurnEngine.DEPLOY_MIN_SEPARATION, 0)
+	if wide._in_deploy_band(inside, 0):
+		_check(not wide.is_legal_deploy_hex(inside, 0),
+				"hex within DEPLOY_MIN_SEPARATION of an enemy is rejected")
+	if wide._in_deploy_band(beyond, 0):
+		_check(wide.is_legal_deploy_hex(beyond, 0),
+				"hex exactly DEPLOY_MIN_SEPARATION from an enemy is legal")
+
+	# legal_deploy_hexes returns only legal hexes, all inside the band.
+	var hexes := e.legal_deploy_hexes(0, player)
+	_check(hexes.size() > 0, "legal_deploy_hexes finds room for the player")
+	var all_legal := true
+	for h in hexes:
+		if not e.is_legal_deploy_hex(h, 0, player) or h.x >= TurnEngine.DEPLOY_ZONE_COLS:
+			all_legal = false
+	_check(all_legal, "every hex from legal_deploy_hexes is legal and in-band")
+
+	# place_ship moves a ship to a legal hex and refuses an illegal one.
+	_check(e.place_ship(player, Vector2i(10, 10), 3),
+			"place_ship accepts a legal hex")
+	_check_eq(player.hex, Vector2i(10, 10), "place_ship moved the ship")
+	_check_eq(player.facing, 3, "place_ship set the new facing")
+	var before := player.hex
+	_check(not e.place_ship(player, Vector2i(45, 10), 0),
+			"place_ship refuses an out-of-band hex")
+	_check_eq(player.hex, before, "a refused place_ship leaves the ship put")
+
+	# The shipped default roster layout must itself be fully legal — no ship
+	# starts off its own side or inside the enemy's striking distance.
+	var def := TurnEngine.new()
+	def.setup_rosters(
+		[&"helium_scout", &"one_man_flyer"],
+		[&"zodanga_cruiser", &"helium_battleship"], 321)
+	var default_legal := true
+	for s in def.ships:
+		if not def.is_legal_deploy_hex(s.hex, s.side, s):
+			default_legal = false
+	_check(default_legal, "default roster layout is a legal deployment for both sides")
 
 
 func _test_side_victory() -> void:
