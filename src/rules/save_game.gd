@@ -169,6 +169,12 @@ static func _missing_dependency(data: Dictionary) -> String:
 		var did := StringName(sd["def_id"])
 		if not ShipLibrary.has_ship(did):
 			return "this save needs ship class '%s' (a removed mod?)" % did
+		# The hull's mount count must still match the saved per-gun state, or the
+		# UI/rules walk the mounts against a shorter gun_states array and crash.
+		# A gun added or removed from this class makes the save incompatible.
+		var saved_guns := (sd.get("gun_states", []) as Array).size()
+		if saved_guns != ShipLibrary.ship(did).gun_mounts.size():
+			return "this save is from an older version — the '%s' hull's gun layout changed" % did
 		for m in ShipLibrary.ship(did).gun_mounts:
 			var gid := StringName(m["gun_id"])
 			if not ShipLibrary.has_gun(gid):

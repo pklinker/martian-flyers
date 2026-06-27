@@ -19,10 +19,6 @@ enum DemoPhase { DEPLOY, ALLOCATE, PLOT, MOVE, FIRE, OVER }
 const PLAYER_SIDE := 0
 const AI_SIDE := 1
 
-## Single quicksave slot. user:// keeps it in the per-user data dir, off in the
-## project tree, so it survives reinstalls of the game build but not the player.
-const SAVE_PATH := "user://quicksave.flyersave"
-
 var engine: TurnEngine
 var ais: Dictionary = {}              # ShipState (AI side) -> ShipAI
 var map: HexMapView
@@ -95,8 +91,12 @@ var phase := DemoPhase.ALLOCATE
 
 func _ready() -> void:
 	_build_ui()
-	# Resume a battle suspended via the menu, if the player asked to; otherwise
-	# start a fresh engagement.
+	# Boot into the battle the title screen asked for: a loaded quicksave, a
+	# suspended battle to resume, or otherwise a fresh engagement.
+	if BattleConfig.load_save:
+		BattleConfig.load_save = false
+		if _load_quicksave():
+			return
 	if BattleConfig.resume:
 		BattleConfig.resume = false
 		if _resume_battle():
@@ -141,10 +141,10 @@ func _build_ui() -> void:
 	rotate_r_btn = _add_button(row1, "↷", _on_rotate_field.bind(1), "system")
 	rotate_l_btn.tooltip_text = "Rotate the field left — or right-drag the map to spin it freely"
 	rotate_r_btn.tooltip_text = "Rotate the field right — or right-drag the map to spin it freely"
-	_add_button(row1, "Save", _on_save, "system")
-	_add_button(row1, "Load", _on_load, "system")
-	_add_button(row1, "New Game", _new_game, "warn")
-	_add_button(row1, "Menu", _on_quit_to_menu, "warn")
+	# Save / Load / New Game now live on the title screen; the only "leave" action
+	# kept here is a gear that returns there (auto-suspending the battle).
+	var menu_btn := _add_button(row1, "⚙", _on_quit_to_menu, "warn")
+	menu_btn.tooltip_text = "Return to the main menu"
 
 	# Row 2: "Your ships" fleet tabs.
 	roster_bar = HBoxContainer.new()
@@ -456,29 +456,16 @@ func _ship_at(hex: Vector2i) -> ShipState:
 
 # --- Save / load -----------------------------------------------------------
 
-func _on_save() -> void:
-	if engine == null:
-		return
-	var err := SaveGame.save_to_file(engine, SAVE_PATH)
-	if err == OK:
-		log_box.append_text("[Saved — turn %d]\n" % engine.turn_number)
-	else:
-		log_box.append_text("[Save failed: error %d]\n" % err)
-
-
-## Restore the saved engine and resume at the start of that turn's allocation.
-## A save can be taken at any point in a turn; on load we re-open ALLOCATE (the
-## clean per-turn entry point) with each ship's saved crew plan carried forward.
-func _on_load() -> void:
-	var loaded := SaveGame.load_from_file(SAVE_PATH)
+## Restore the quicksave the title screen's Load asked for. A save can be taken
+## at any point in a turn; on load we re-open ALLOCATE (the clean per-turn entry
+## point) with each ship's saved crew plan carried forward.
+func _load_quicksave() -> bool:
+	var loaded := SaveGame.load_from_file(BattleConfig.SAVE_PATH)
 	if loaded == null:
-		if SaveGame.load_error != "":
-			log_box.append_text("[Load failed: %s]\n" % SaveGame.load_error)
-		else:
-			log_box.append_text("[No save to load]\n")
-		return
+		return false
 	_adopt_loaded(loaded)
-	log_box.append_text("[Loaded — turn %d]\n" % engine.turn_number)
+	log_box.append_text("Loaded quicksave — turn %d.\n" % engine.turn_number)
+	return true
 
 
 ## Resume the battle the player suspended when they last opened the menu.
