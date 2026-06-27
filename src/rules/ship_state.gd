@@ -58,8 +58,9 @@ static func create(ship_def: ShipDef, p_side: int, start_hex: Vector2i, start_fa
 		s.systems_remaining[t] = ship_def.systems[t]
 	for m in ship_def.gun_mounts:
 		var gun: GunDef = ShipLibrary.gun(m["gun_id"])
-		# Torpedo tubes carry a finite load; guns use -1 to mean "not tracked".
-		var ammo: int = gun.ammo if gun.is_torpedo else -1
+		# Torpedo tubes carry a finite load; guns use -1 to mean "not tracked". A
+		# mount may override the magazine size (per-tube ammo), else the gun's default.
+		var ammo: int = int(m.get("ammo", gun.ammo)) if gun.is_torpedo else -1
 		s.gun_states.append({ "destroyed": false, "reload": 0, "manned": false, "ammo": ammo })
 	# Port gets the ceiling on odd totals so port >= stbd at start.
 	var total_buoy := s.sys(ShipDef.SystemType.BUOYANCY)
@@ -94,19 +95,25 @@ func effective_max_speed() -> int:
 ## engine-room crew is powering the radium engine. No engine crew = no way on.
 ## (Allocation is set in the ALLOCATE phase, before speed is plotted.)
 func usable_max_speed() -> int:
-	var crew_cap := int(allocation.get("engine", 0)) * def.speed_per_engine_crew
+	# Engine crew costs def.engine_crew_per_speed per hex, so the allocated engine
+	# crew supports floor(crew / cost) hexes — capped by the engine-box ceiling.
+	if def.engine_crew_per_speed <= 0:
+		return effective_max_speed()       # a free engine needs no crew
+	var crew_cap := int(allocation.get("engine", 0)) / def.engine_crew_per_speed
 	return mini(effective_max_speed(), crew_cap)
 
-## Engine-room crew needed to drive `target_speed` hexes (rounding up). Useful
-## to the allocation UI and AI when reserving crew for a desired speed.
+## Engine-room crew needed to drive `target_speed` hexes this turn — the per-hex
+## crew cost times the target. Useful to the allocation UI and AI when reserving
+## crew for a desired speed.
 func engine_crew_for_speed(target_speed: int) -> int:
-	if def.speed_per_engine_crew <= 0:
+	if def.engine_crew_per_speed <= 0:
 		return 0
-	return int(ceil(float(target_speed) / def.speed_per_engine_crew))
+	return target_speed * def.engine_crew_per_speed
 
-## Acceleration/deceleration allowed between turns, from propeller boxes.
+## Acceleration/deceleration allowed between turns: the ship's rated
+## acceleration, scaled down by propeller damage, never below 1.
 func max_speed_change() -> int:
-	return max(1, int(ceil(2.0 * sys_fraction(ShipDef.SystemType.PROPELLER))))
+	return max(1, int(ceil(float(def.acceleration) * sys_fraction(ShipDef.SystemType.PROPELLER))))
 
 ## Turn mode worsens (+1 straight hex required) when rudder is half gone,
 ## and again when it is fully gone. A listing ship also turns more sluggishly:
@@ -198,8 +205,8 @@ func guns_bearing_from(from_hex: Vector2i, from_facing: int, target_hex: Vector2
 ## fire-declaration UI's shot preview. Pure query; declares nothing.
 ## Returns { "bears": bool, "reason": String, "range": int,
 ##           "to_hit": int, "damage": int, "dust_penalty": int }.
-## When "bears" is false, "reason" says why (destroyed / unmanned / reloading /
-## out of arc / LOS blocked / out of range). Pass `terrain` for accurate LOS
+## When "bears" is false, "reason" says why (destroyed / unmanned / out of ammo /
+## reloading / out of arc / LOS blocked / out of range). Pass `terrain` for LOS
 ## and dust-penalty accounting; omit for a terrain-free preview.
 func fire_preview(i: int, target_hex: Vector2i, terrain: Dictionary = {}) -> Dictionary:
 	var mount := def.gun_mounts[i]
@@ -215,10 +222,12 @@ func fire_preview(i: int, target_hex: Vector2i, terrain: Dictionary = {}) -> Dic
 		out["reason"] = "destroyed"
 	elif not st["manned"]:
 		out["reason"] = "unmanned"
+	elif gun.is_torpedo and int(st.get("ammo", -1)) == 0:
+		# An empty tube is spent for good — say so before "reloading", since the
+		# reload counter on a no-ammo tube would never produce another torpedo.
+		out["reason"] = "out of ammo"
 	elif int(st["reload"]) > 0:
 		out["reason"] = "reloading"
-	elif gun.is_torpedo and int(st.get("ammo", -1)) == 0:
-		out["reason"] = "no torpedoes"
 	elif not (rb in mount["arcs"]):
 		out["reason"] = "out of arc"
 	elif not TerrainDef.los_clear(hex, target_hex, terrain):

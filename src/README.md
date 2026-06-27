@@ -44,7 +44,7 @@ advantage inside a fire phase.
 
 **Crew as the energy-allocation analog.** Each turn crew boxes are assigned
 to gun mounts (required to fire), the engine room (`usable_max_speed` =
-`engine_crew × speed_per_engine_crew`, capped by the engine-box ceiling), and
+`engine_crew ÷ engine_crew_per_speed`, capped by the engine-box ceiling), and
 damage control. You can't run the engine flat-out *and* man every gun *and*
 patch tanks — pick. Crew casualties from the DAC shrink the pool — the SFB
 power-curve feel, in Barsoom terms.

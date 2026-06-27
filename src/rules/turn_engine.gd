@@ -426,7 +426,7 @@ func _burn_fires(s: ShipState) -> void:
 ## wiped (no one left to fly it). The single predicate the victory check and the
 ## living-ship queries share, so UI/AI never re-derive "is this ship done".
 func is_out_of_action(s: ShipState) -> bool:
-	return s.is_destroyed or s.grounded or s.crew_pool() == 0
+	return s.is_destroyed or s.grounded or s.crew_pool() <= 0
 
 ## The ships still flying for a side (empty when the whole side is out).
 func living_ships(side: int) -> Array[ShipState]:
@@ -453,7 +453,7 @@ func _check_victory() -> void:
 		return
 	# Crew wiped out — no one left to fly the ship; mark it a loss.
 	for s in ships:
-		if not s.is_destroyed and not s.grounded and s.crew_pool() == 0:
+		if not s.is_destroyed and not s.grounded and s.crew_pool() <= 0:
 			s.is_destroyed = true
 	# Which sides are present, and which of them still have a live ship?
 	var side_has_live: Dictionary = {}

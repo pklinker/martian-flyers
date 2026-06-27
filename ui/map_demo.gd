@@ -445,7 +445,10 @@ func _on_save() -> void:
 func _on_load() -> void:
 	var loaded := SaveGame.load_from_file(SAVE_PATH)
 	if loaded == null:
-		log_box.append_text("[No save to load]\n")
+		if SaveGame.load_error != "":
+			log_box.append_text("[Load failed: %s]\n" % SaveGame.load_error)
+		else:
+			log_box.append_text("[No save to load]\n")
 		return
 	_adopt_loaded(loaded)
 	log_box.append_text("[Loaded — turn %d]\n" % engine.turn_number)
@@ -853,13 +856,15 @@ func _refresh_alloc_display() -> void:
 	var p := _active
 	var st: Dictionary = _alloc[p]
 	var pool := p.crew_pool()
-	var rate: int = p.def.speed_per_engine_crew
 	var used := _plan_cost(p, st["guns"], int(st["engine"]), int(st["dc"]), int(st["lookout"]))
 	engine_label.text = str(engine_value)
 	dc_label.text = str(dc_value)
 	if lookout_label != null:
 		lookout_label.text = str(lookout_value)
-	var cap: int = mini(p.effective_max_speed(), engine_value * rate)
+	# A free (pilot-flown) engine ignores crew; otherwise speed = engine crew ÷ cost.
+	var cap: int = p.effective_max_speed()
+	if p.def.engine_crew_per_speed > 0:
+		cap = mini(cap, engine_value / p.def.engine_crew_per_speed)
 	crew_label.text = "   CREW %d / %d   (top speed %d)   " % [used, pool, cap]
 	crew_label.modulate = Color(0.85, 0.3, 0.2) if used > pool else Color.WHITE
 	# Nothing to commit when over budget, or when this ship is already committed
