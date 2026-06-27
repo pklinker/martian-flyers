@@ -32,6 +32,11 @@ const TARGET_RETICLE := Color(0.85, 0.18, 0.15, 0.9)
 const SIDE_COLORS: Array[Color] = [Color(0.16, 0.32, 0.62), Color(0.62, 0.16, 0.13)]
 const WRECK := Color(0.35, 0.32, 0.30)
 
+## Direction sunlight travels across the screen (down-right). Faces whose outward
+## normal opposes this are lit; shadows are cast along it. Fixed in screen space, so
+## the lit faces change as the field rotates — which reads as a real sun overhead.
+const SUN_SCREEN := Vector2(0.45, 0.55)
+
 const TRACER := Color(0.95, 0.85, 0.45)        # radium shell streak
 const TORPEDO_TRACER := Color(0.55, 0.85, 0.95) # cooler, for the AP fish
 const FLASH_HIT := Color(0.95, 0.55, 0.15)      # shell strike burst
@@ -61,6 +66,40 @@ var _cam_center := Vector2.ZERO
 var _needs_initial_frame := true
 var _press_pos := Vector2.ZERO
 var _panning := false
+
+## View transform: the field can be drawn flat top-down (overhead) or tilted into
+## an axonometric "2.5D" isometric view. Every hex/ship/terrain point goes through
+## project()/project_local(), which maps a ground-cartesian point plus a height into
+## screen space. Overhead = _theta 0, _tilt 1, _height_scale 0 → numerically identical
+## to the original flat hex_to_pixel (regression-safe). Isometric tilts the ground
+## (foreshortened y) and lifts geometry by its height. These three are tweened on
+## _process for a smooth transition; targets are set by set_view_mode/rotate_field.
+var _theta := 0.0                     # field rotation (radians), snapped to orientation
+var _tilt := 1.0                      # ground-depth foreshortening: 1 overhead → ISO_TILT
+var _height_scale := 0.0              # screen lift per unit world-height: 0 overhead → ISO_HEIGHT
+
+## Overhead ⇄ isometric toggle. The transform above is tweened toward these targets
+## on _process; OVERHEAD locks back to a flat north-up view, ISOMETRIC tilts the field.
+enum ViewMode { OVERHEAD, ISOMETRIC }
+signal view_mode_changed(mode: int)
+
+const ISO_TILT := 0.58                # depth foreshortening in isometric
+const ISO_HEIGHT := 0.95             # screen lift per world-height unit in isometric
+const VIEW_LERP := 7.0                # transition snappiness (higher = faster settle)
+const SHIP_ALT := 0.6                 # world-height a living flyer hovers at
+
+var _anim_t := 0.0                     # free-running clock for idle bob / drift (iso only)
+
+## Ambient drifting clouds — pure presentation, no gameplay effect, only shown in iso.
+## Lazily seeded across the board; each drifts along +x and wraps. See _ensure_clouds.
+const CLOUD_HEIGHT := 3.2
+var _clouds: Array[Dictionary] = []
+
+var view_mode := ViewMode.OVERHEAD
+var _orientation := 0                  # snapped field facing 0..5 (isometric only)
+var _target_theta := 0.0
+var _target_tilt := 1.0
+var _target_height := 0.0
 
 const MAX_HEX := 64.0                  # manual zoom-in ceiling
 const PAN_THRESHOLD := 6.0             # px of drag before a click becomes a pan
@@ -112,12 +151,37 @@ func set_fire_targets(hexes: Array[Vector2i]) -> void:
 # Geometry: pixel <-> hex, matching HexMath.to_cartesian scaled by hex_size.
 # ---------------------------------------------------------------------------
 
-func hex_to_pixel(hex: Vector2i) -> Vector2:
-	var c := HexMath.to_cartesian(hex)
-	return _origin + c * hex_size
+## Map a ground-cartesian point (hex units) plus a world-height into the view's
+## local pixel offset from _origin. Rotation spins the ground; tilt foreshortens the
+## depth axis; height lifts the point up the screen. This is the single seam every
+## drawable goes through, so overhead and isometric share one code path.
+## Unit-space projection (no zoom, no origin): the linear part of the view transform.
+## Camera framing/clamping work here so they're independent of zoom and pan.
+func _proj_unit(cart: Vector2, height: float) -> Vector2:
+	var r := cart.rotated(_theta)
+	return Vector2(r.x, r.y * _tilt - height * _height_scale)
 
+## Inverse of _proj_unit on the ground plane (height 0): un-tilt then un-rotate.
+func _unproj_unit(u: Vector2) -> Vector2:
+	var unt := Vector2(u.x, u.y / _tilt) if absf(_tilt) > 0.0001 else u
+	return unt.rotated(-_theta)
+
+func project_local(cart: Vector2, height: float) -> Vector2:
+	return _proj_unit(cart, height) * hex_size
+
+func project(cart: Vector2, height: float) -> Vector2:
+	return _origin + project_local(cart, height)
+
+func hex_to_pixel(hex: Vector2i) -> Vector2:
+	return project(HexMath.to_cartesian(hex), 0.0)
+
+## Inverse of project() on the ground plane (height 0): the player clicks where a
+## token's base sits, so picking always resolves against the floor. Un-applies origin
+## and zoom, un-tilts the depth axis, un-rotates, then reuses the axial cube-round.
 func pixel_to_hex(p: Vector2) -> Vector2i:
-	var pt := (p - _origin) / hex_size
+	var local := (p - _origin) / hex_size
+	var unt := Vector2(local.x, local.y / _tilt) if absf(_tilt) > 0.0001 else local
+	var pt := unt.rotated(-_theta)
 	var fq := (2.0 / 3.0) * pt.x
 	var fr := (-1.0 / 3.0) * pt.x + (SQRT3 / 3.0) * pt.y
 	return _cube_round(fq, fr)
@@ -190,6 +254,11 @@ func clear_effects() -> void:
 	set_process(false)
 
 func _process(delta: float) -> void:
+	var animating := _step_view(delta)
+	_anim_t += delta
+	# Isometric is a living scene (hovering flyers, drifting dust/clouds), so keep
+	# ticking while it's shown; overhead is static and idles once effects clear.
+	var ambient := view_mode == ViewMode.ISOMETRIC
 	var alive := false
 	for fx in _tracers:
 		fx["t"] += delta
@@ -201,7 +270,7 @@ func _process(delta: float) -> void:
 			alive = true
 	_tracers = _tracers.filter(func(f: Dictionary) -> bool: return f["t"] < f["life"])
 	_flashes = _flashes.filter(func(f: Dictionary) -> bool: return f["t"] < f["life"])
-	if not alive:
+	if not alive and not animating and not ambient:
 		set_process(false)
 	queue_redraw()
 
@@ -213,6 +282,8 @@ func frame_ships() -> void:
 	if size.x <= 0.0 or size.y <= 0.0:
 		_needs_initial_frame = true   # no layout yet; do it on the first real draw
 		return
+	# Work in unit-projected space so the fit is correct at any tilt/rotation: the
+	# foreshortened, rotated footprint is what actually has to fit the viewport.
 	var lo := Vector2(INF, INF)
 	var hi := -lo
 	var n := 0
@@ -220,9 +291,9 @@ func frame_ships() -> void:
 		for s in engine.ships:
 			if s.is_destroyed:
 				continue
-			var c := HexMath.to_cartesian(s.hex)
-			lo = lo.min(c)
-			hi = hi.max(c)
+			var u := _proj_unit(HexMath.to_cartesian(s.hex), 0.0)
+			lo = lo.min(u)
+			hi = hi.max(u)
 			n += 1
 	if n == 0:
 		lo = Vector2.ZERO
@@ -230,7 +301,7 @@ func frame_ships() -> void:
 	var w_units := (hi.x - lo.x) + 2.0 * (HALF_W + SHIP_MARGIN)
 	var h_units := (hi.y - lo.y) + 2.0 * (HALF_H + SHIP_MARGIN)
 	hex_size = clampf(minf(size.x / w_units, size.y / h_units), MIN_HEX, DEFAULT_HEX)
-	_cam_center = (lo + hi) * 0.5
+	_cam_center = _unproj_unit((lo + hi) * 0.5)
 	_needs_initial_frame = false
 	_clamp_camera()
 	queue_redraw()
@@ -242,8 +313,11 @@ func center_on(hex: Vector2i) -> void:
 	queue_redraw()
 
 ## Pan by a pixel delta (drag / two-finger scroll): move the world under the view.
+## The drag happens in screen space, so step the camera in unit-projected space and
+## map back to a cartesian centre — a straight cartesian shift would skew under tilt.
 func pan(delta_px: Vector2) -> void:
-	_cam_center -= delta_px / hex_size
+	var uc := _proj_unit(_cam_center, 0.0) - delta_px / hex_size
+	_cam_center = _unproj_unit(uc)
 	_clamp_camera()
 	queue_redraw()
 
@@ -253,6 +327,64 @@ func zoom_by(factor: float) -> void:
 	_clamp_camera()
 	queue_redraw()
 
+
+# ---------------------------------------------------------------------------
+# View mode (overhead ⇄ isometric) and field rotation
+# ---------------------------------------------------------------------------
+
+## Switch between the flat top-down view and the tilted isometric view. The actual
+## transform animates toward the new targets on _process, so the swap reads as the
+## camera tilting down (or lifting back up) rather than a jump.
+func set_view_mode(mode: int) -> void:
+	if mode == view_mode:
+		return
+	view_mode = mode
+	if view_mode == ViewMode.ISOMETRIC:
+		_target_tilt = ISO_TILT
+		_target_height = ISO_HEIGHT
+		_target_theta = _orientation * (TAU / 6.0)
+	else:
+		# Overhead is always flat and north-up; rotation only lives in isometric.
+		_target_tilt = 1.0
+		_target_height = 0.0
+		_target_theta = 0.0
+	set_process(true)
+	view_mode_changed.emit(view_mode)
+
+func toggle_view() -> void:
+	set_view_mode(ViewMode.OVERHEAD if view_mode == ViewMode.ISOMETRIC else ViewMode.ISOMETRIC)
+
+## Snap the isometric field by one hex-facing step (±1 of 6). No-op in overhead,
+## which stays north-up. The transform tweens to the new angle on _process.
+func rotate_field(step: int) -> void:
+	if view_mode != ViewMode.ISOMETRIC:
+		return
+	_orientation = posmod(_orientation + step, 6)
+	_target_theta = _orientation * (TAU / 6.0)
+	set_process(true)
+
+## Step the view transform toward its targets. Returns true while still moving, so
+## _process keeps ticking through the transition (and any field-rotation snap).
+func _step_view(delta: float) -> bool:
+	var k := minf(delta * VIEW_LERP, 1.0)
+	var moving := false
+	if absf(_tilt - _target_tilt) > 0.0005:
+		_tilt = lerpf(_tilt, _target_tilt, k); moving = true
+	else:
+		_tilt = _target_tilt
+	if absf(_height_scale - _target_height) > 0.0005:
+		_height_scale = lerpf(_height_scale, _target_height, k); moving = true
+	else:
+		_height_scale = _target_height
+	var dth := wrapf(_target_theta - _theta, -PI, PI)
+	if absf(dth) > 0.0008:
+		_theta += dth * k; moving = true
+	else:
+		_theta = _target_theta
+	if moving:
+		_clamp_camera()
+	return moving
+
 ## Keep the view over the playfield: the field never scrolls off into the empty
 ## sea-bottom void. The camera centre is held so the view stays inside the board's
 ## cartesian bounds (plus a one-hex margin); on any axis where the board is
@@ -260,20 +392,38 @@ func zoom_by(factor: float) -> void:
 func _clamp_camera() -> void:
 	if size.x <= 0.0 or size.y <= 0.0 or hex_size <= 0.0:
 		return
-	var b := _board_bounds()
+	# Clamp in unit-projected space, where the viewport is an axis-aligned rectangle
+	# regardless of tilt/rotation. Convert the camera centre in, clamp, convert back.
+	var b := _board_bounds_unit()
 	var lo := b.position - Vector2(HALF_W, HALF_H)
 	var hi := b.end + Vector2(HALF_W, HALF_H)
 	var half := size * 0.5 / hex_size
+	var uc := _proj_unit(_cam_center, 0.0)
 	for axis in 2:
 		if hi[axis] - lo[axis] <= 2.0 * half[axis]:
-			_cam_center[axis] = (lo[axis] + hi[axis]) * 0.5
+			uc[axis] = (lo[axis] + hi[axis]) * 0.5
 		else:
-			_cam_center[axis] = clampf(_cam_center[axis], lo[axis] + half[axis], hi[axis] - half[axis])
+			uc[axis] = clampf(uc[axis], lo[axis] + half[axis], hi[axis] - half[axis])
+	_cam_center = _unproj_unit(uc)
 
-## Cartesian bounding box of the whole playfield. The board is a sheared
-## rectangle in axial space, so its cartesian extent is found from the corner
-## columns' top/bottom rows (an even and an odd column capture the half-hex
-## y-shear at both ends).
+## Unit-projected bounding box of the whole playfield. The board is a sheared
+## rectangle in axial space; under rotation the screen-space extremes are among its
+## corner hexes, so project those (corner columns × top/bottom rows) and bound them.
+func _board_bounds_unit() -> Rect2:
+	var lo := Vector2(INF, INF)
+	var hi := -lo
+	for q in [0, 1, cols - 2, cols - 1]:
+		if q < 0 or q >= cols:
+			continue
+		var off := row_offset(q)
+		for r in [off, off + rows - 1]:
+			var u := _proj_unit(HexMath.to_cartesian(Vector2i(q, r)), 0.0)
+			lo = lo.min(u)
+			hi = hi.max(u)
+	return Rect2(lo, hi - lo)
+
+## Cartesian bounding box of the whole playfield (rotation-independent). Used to
+## seed and wrap the ambient cloud field, which lives in ground-cartesian space.
 func _board_bounds() -> Rect2:
 	var lo := Vector2(INF, INF)
 	var hi := -lo
@@ -337,12 +487,21 @@ func _click(pos: Vector2) -> void:
 # Drawing
 # ---------------------------------------------------------------------------
 
-func _corners(center: Vector2) -> PackedVector2Array:
+## The six corners of a hex, projected on the ground plane (or lifted to `height`).
+## Each vertex goes through project() so cells foreshorten and rotate with the field;
+## in overhead this collapses to a plain flat hexagon at the cell's pixel centre.
+func _hex_corners(hex: Vector2i, height := 0.0) -> PackedVector2Array:
+	var base := HexMath.to_cartesian(hex)
 	var pts := PackedVector2Array()
 	for i in 6:
 		var a := deg_to_rad(60.0 * i)
-		pts.append(center + hex_size * Vector2(cos(a), sin(a)))
+		pts.append(project(base + Vector2(cos(a), sin(a)), height))
 	return pts
+
+## Painter's-algorithm depth key for a ground point: how far "back" it sits along
+## the (rotated, foreshortened) view depth axis. Smaller = farther, drawn first.
+func _depth_of(cart: Vector2) -> float:
+	return cart.rotated(_theta).y
 
 static func _facing_dir(facing: int) -> Vector2:
 	var a := deg_to_rad(facing * 60.0)
@@ -351,9 +510,13 @@ static func _facing_dir(facing: int) -> Vector2:
 func _draw() -> void:
 	if _needs_initial_frame:
 		frame_ships()                       # first draw after layout: fit the fleets
-	_origin = size * 0.5 - _cam_center * hex_size
+	# Solve _origin so the camera-centre ground point lands at the view centre under
+	# the current projection (identical to the old flat formula when overhead).
+	_origin = size * 0.5 - project_local(_cam_center, 0.0)
 	draw_rect(Rect2(Vector2.ZERO, size), SEA_BOTTOM, true)
 	var font := get_theme_default_font()
+	var iso_k := clampf(_height_scale / ISO_HEIGHT, 0.0, 1.0)   # 0 overhead → 1 full iso
+	_ensure_clouds()
 
 	# Grid — only the cells the camera currently shows (the field is large).
 	var cull := hex_size * 1.5
@@ -363,10 +526,12 @@ func _draw() -> void:
 			var c := hex_to_pixel(Vector2i(q, r))
 			if c.x < -cull or c.x > size.x + cull or c.y < -cull or c.y > size.y + cull:
 				continue
-			var pts := _corners(c)
+			var pts := _hex_corners(Vector2i(q, r))
 			draw_polyline(pts + PackedVector2Array([pts[0]]), GRID, 1.0)
 
-	# Terrain (above grid, below highlights and ships)
+	# Flat terrain ground (dust tint + a footprint for hills/towers). The raised
+	# 3D massing of hills/towers is drawn later in the depth-sorted object pass; this
+	# is just the tile they stand on, so it reads correctly in overhead too.
 	if engine != null:
 		for hex: Vector2i in engine.terrain:
 			var c := hex_to_pixel(hex)
@@ -374,11 +539,11 @@ func _draw() -> void:
 				continue
 			var t: int = engine.terrain[hex]
 			var col := TerrainDef.render_color(t)
-			draw_colored_polygon(_corners(c), col)
+			var pts := _hex_corners(hex)
+			draw_colored_polygon(pts, col)
 			# Heavier border on LOS-blocking terrain so captains can spot it.
 			var edge_col := col.darkened(0.35)
 			var edge_w := 2.5 if TerrainDef.blocks_los(t) else 1.0
-			var pts := _corners(c)
 			draw_polyline(pts + PackedVector2Array([pts[0]]), edge_col, edge_w)
 			# Single-letter label: H = Hill, T = Tower, D = Dust.
 			draw_string(font, c + Vector2(-4.0, 5.0),
@@ -386,31 +551,57 @@ func _draw() -> void:
 					HORIZONTAL_ALIGNMENT_LEFT, -1, 10,
 					Color(0.12, 0.08, 0.03, 0.90))
 
+	# Cloud shadows scud across the ground (iso only), beneath everything that stands on it.
+	_draw_cloud_shadows(iso_k)
+
 	# Deployment-zone tint (pre-game placement): legal deploy hexes, beneath the
 	# legal-move highlights and ships.
 	for hex in deploy_hexes:
 		var c := hex_to_pixel(hex)
 		if c.x < -cull or c.x > size.x + cull or c.y < -cull or c.y > size.y + cull:
 			continue
-		draw_colored_polygon(_corners(c), DEPLOY_ZONE)
-		var dpts := _corners(c)
-		draw_polyline(dpts + PackedVector2Array([dpts[0]]), DEPLOY_ZONE_EDGE, 1.0)
+		var pts := _hex_corners(hex)
+		draw_colored_polygon(pts, DEPLOY_ZONE)
+		draw_polyline(pts + PackedVector2Array([pts[0]]), DEPLOY_ZONE_EDGE, 1.0)
 
 	# Legal-move highlights
 	for m in highlight_moves:
-		var c := hex_to_pixel(m["hex"])
-		draw_colored_polygon(_corners(c), HIGHLIGHT)
-		var pts := _corners(c)
+		var hx: Vector2i = m["hex"]
+		var c := hex_to_pixel(hx)
+		var pts := _hex_corners(hx)
+		draw_colored_polygon(pts, HIGHLIGHT)
 		draw_polyline(pts + PackedVector2Array([pts[0]]), HIGHLIGHT_EDGE, 2.0)
-		# Small tick showing the facing the ship will have after this move.
-		draw_line(c, c + _facing_dir(m["facing"]) * hex_size * 0.55, HIGHLIGHT_EDGE, 2.0)
+		# Small tick showing the facing the ship will have after this move, drawn in
+		# the projected ground direction so it points correctly when the field rotates.
+		var base := HexMath.to_cartesian(hx)
+		var tip := project(base + _facing_dir(m["facing"]) * 0.55, 0.0)
+		draw_line(c, tip, HIGHLIGHT_EDGE, 2.0)
 
 	if engine == null:
 		return
 
-	# Ships
+	# Depth-sorted 3D pass: extruded terrain massing (hills/towers) and hovering ships
+	# share one back-to-front ordering so a flyer behind a mountain is occluded by it.
+	# Dust is atmosphere, painted later. Ships get a hair more depth so one sitting on a
+	# hill draws on top of it rather than inside it.
+	var objs: Array[Dictionary] = []
+	# Terrain massing is the flat tile (drawn above) until the field tilts; only then
+	# does it rise into prisms/dust columns. Keeps overhead identical to the old map.
+	if iso_k > 0.02:
+		for hex: Vector2i in engine.terrain:
+			var t: int = engine.terrain[hex]
+			var kind := "dust" if t == TerrainDef.Type.DUST_STORM else "terrain"
+			objs.append({"depth": _depth_of(HexMath.to_cartesian(hex)), "kind": kind,
+					"hex": hex, "type": t})
 	for s in engine.ships:
-		_draw_ship(font, s)
+		objs.append({"depth": _depth_of(HexMath.to_cartesian(s.hex)) + 0.01,
+				"kind": "ship", "ship": s})
+	objs.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return a["depth"] < b["depth"])
+	for o in objs:
+		match o["kind"]:
+			"terrain": _draw_terrain_prism(font, o["hex"], o["type"])
+			"dust": _draw_dust(o["hex"])
+			"ship": _draw_ship(font, o["ship"])
 
 	# Fire-target reticles: a red ring + crosshair over each enemy the active
 	# ship's chosen guns are aimed at this FIRE phase.
@@ -425,6 +616,9 @@ func _draw() -> void:
 
 	# Combat effects, on top of everything (streaks and bursts in the air).
 	_draw_effects()
+
+	# Drifting clouds are the highest layer — the open sky over the battle.
+	_draw_clouds(iso_k)
 
 
 ## Tracers as fading lines (a small leading bolt at the head); flashes as
@@ -458,20 +652,41 @@ func _draw_effects() -> void:
 
 
 func _draw_ship(font: Font, s: ShipState) -> void:
-	var c := hex_to_pixel(s.hex)
+	var cart := HexMath.to_cartesian(s.hex)
 	var col: Color = WRECK if (s.is_destroyed or s.grounded) else SIDE_COLORS[s.side]
 
-	# Active-ship ring
+	# Flyers hover; wrecks and grounded hulls have settled onto the sea bottom. A slow
+	# idle bob (only visible in iso, where height_scale > 0) keeps the living fleet alive.
+	var down: bool = s.is_destroyed or s.grounded
+	var bob := sin(_anim_t * 1.6 + float(s.hex.x * 7 + s.hex.y * 13)) * 0.06
+	var alt := 0.0 if down else (SHIP_ALT + bob)
+
+	var g := project(cart, 0.0)              # ground point (shadow + altitude post)
+	var c := project(cart, alt)              # the hull itself
+
+	# Ground shadow — fades in with the tilt so overhead stays a clean flat token.
+	var sh_a := 0.30 * clampf(_height_scale / ISO_HEIGHT, 0.0, 1.0)
+	if sh_a > 0.01:
+		draw_colored_polygon(_ground_ellipse(cart, 0.5), Color(0.08, 0.06, 0.04, sh_a))
+		draw_line(g, c, Color(0.08, 0.06, 0.04, sh_a * 0.8), 1.5)  # altitude post
+
+	# Active-ship ring (around the hull at altitude)
 	if s == active_ship:
 		draw_arc(c, hex_size * 0.92, 0.0, TAU, 32, ACTIVE_RING, 3.0)
 
-	# Hull: triangle pointing at facing
-	var dir := _facing_dir(s.facing)
-	var tip := c + dir * hex_size * 0.66
-	var a_back1 := deg_to_rad(s.facing * 60.0 + 145.0)
-	var a_back2 := deg_to_rad(s.facing * 60.0 - 145.0)
-	var b1 := c + hex_size * 0.55 * Vector2(sin(a_back1), -cos(a_back1))
-	var b2 := c + hex_size * 0.55 * Vector2(sin(a_back2), -cos(a_back2))
+	# Hull: a triangle pointing along facing, its corners projected on the ground at
+	# altitude so it foreshortens and turns with the field. A darker keel a touch lower
+	# gives the token a hint of thickness in iso.
+	var tip_c := cart + _facing_dir(s.facing) * 0.66
+	var b1_c := cart + 0.55 * _facing_dir_deg(s.facing * 60.0 + 145.0)
+	var b2_c := cart + 0.55 * _facing_dir_deg(s.facing * 60.0 - 145.0)
+	if not down and _height_scale > 0.01:
+		var keel := PackedVector2Array([project(tip_c, alt - 0.12),
+				project(b1_c, alt - 0.12), project(b2_c, alt - 0.12)])
+		draw_colored_polygon(keel, col.darkened(0.45))
+	var tip := project(tip_c, alt)
+	var b1 := project(b1_c, alt)
+	var b2 := project(b2_c, alt)
 	draw_colored_polygon(PackedVector2Array([tip, b1, b2]), col)
 	draw_polyline(PackedVector2Array([tip, b1, b2, tip]), Color(0, 0, 0, 0.6), 1.5)
 
@@ -485,3 +700,149 @@ func _draw_ship(font: Font, s: ShipState) -> void:
 	var initial := s.def.display_name.substr(0, 1)
 	draw_string(font, c + Vector2(-4.0, 4.0), initial,
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color.WHITE)
+
+
+## A flat ellipse on the ground plane around a cartesian point, radius in hex units,
+## used for soft shadows. Projected so it foreshortens with the tilt.
+func _ground_ellipse(cart: Vector2, radius: float) -> PackedVector2Array:
+	var pts := PackedVector2Array()
+	for i in 16:
+		var a := deg_to_rad(22.5 * i)
+		pts.append(project(cart + Vector2(cos(a), sin(a)) * radius, 0.0))
+	return pts
+
+## Cartesian unit direction for an absolute screen-angle in degrees (0 = north,
+## clockwise), matching _facing_dir's convention but for arbitrary angles.
+static func _facing_dir_deg(deg: float) -> Vector2:
+	var a := deg_to_rad(deg)
+	return Vector2(sin(a), -cos(a))
+
+
+## Footprint radius (hex units) of a terrain prism: hills fill the hex, towers are a
+## narrow column standing on the tile.
+func _terrain_radius(t: int) -> float:
+	return 0.42 if t == TerrainDef.Type.TOWER else 1.0
+
+
+## Draw a terrain feature as an extruded prism: a cast ground shadow, the visible side
+## walls shaded by their orientation to the sun (sorted back-to-front), then the lit top
+## face. Reads as flat in overhead (height_scale 0 collapses the walls to nothing).
+func _draw_terrain_prism(font: Font, hex: Vector2i, t: int) -> void:
+	var base := HexMath.to_cartesian(hex)
+	var height := TerrainDef.render_height(t)
+	var rad := _terrain_radius(t)
+	var col := TerrainDef.render_color(t)
+	col.a = 1.0
+
+	# Corner offsets (cartesian), and their projected ground / top rings.
+	var coff: Array[Vector2] = []
+	var ground := PackedVector2Array()
+	var top := PackedVector2Array()
+	for i in 6:
+		var a := deg_to_rad(60.0 * i)
+		var off := Vector2(cos(a), sin(a)) * rad
+		coff.append(off)
+		ground.append(project(base + off, 0.0))
+		top.append(project(base + off, height))
+
+	# Soft cast shadow on the ground, offset along the sun and fading in with the tilt.
+	var sh_k := clampf(_height_scale / ISO_HEIGHT, 0.0, 1.0)
+	if sh_k > 0.01:
+		var shoff := SUN_SCREEN * height * hex_size * 0.5
+		var shp := PackedVector2Array()
+		for i in 6:
+			shp.append(ground[i] + shoff)
+		draw_colored_polygon(shp, Color(0.05, 0.04, 0.03, 0.20 * sh_k))
+
+	# Side walls, each shaded by its outward normal vs the sun, painted far-to-near.
+	var faces: Array[Dictionary] = []
+	for i in 6:
+		var j := (i + 1) % 6
+		var mid := (coff[i] + coff[j]) * 0.5
+		var nrm := mid.normalized().rotated(_theta)
+		var lit := maxf(0.0, -nrm.dot(SUN_SCREEN.normalized()))
+		var shade := col.darkened(0.42).lerp(col.lightened(0.10), lit)
+		faces.append({"d": _depth_of(base + mid),
+				"poly": PackedVector2Array([ground[i], ground[j], top[j], top[i]]),
+				"c": shade})
+	faces.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return a["d"] < b["d"])
+	for f in faces:
+		var poly: PackedVector2Array = f["poly"]
+		draw_colored_polygon(poly, f["c"])
+		draw_polyline(poly + PackedVector2Array([poly[0]]), col.darkened(0.55), 1.0)
+
+	# Lit top face (sunlit from above), with its outline and the type letter.
+	draw_colored_polygon(top, col.lightened(0.20))
+	draw_polyline(top + PackedVector2Array([top[0]]), col.darkened(0.40), 1.5)
+	var ctop := project(base, height)
+	draw_string(font, ctop + Vector2(-4.0, 4.0), TerrainDef.display_name(t).substr(0, 1),
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(0.12, 0.08, 0.03, 0.95))
+
+
+## A dust storm as a billowing column of drifting translucent puffs rising off its
+## tile (the flat ochre tint is already laid down in the ground pass). The puffs only
+## swell in iso — overhead keeps the clean flat haze. Animated on _anim_t.
+func _draw_dust(hex: Vector2i) -> void:
+	var k := clampf(_height_scale / ISO_HEIGHT, 0.0, 1.0)
+	if k < 0.01:
+		return
+	var base := HexMath.to_cartesian(hex)
+	var seed := float(hex.x * 3 + hex.y * 5)
+	var puffs := 5
+	for i in puffs:
+		var ph := float(i) * 1.7 + seed
+		var drift := Vector2(sin(_anim_t * 0.5 + ph) * 0.28, cos(_anim_t * 0.4 + ph) * 0.18)
+		var h := lerpf(0.1, 1.1, float(i) / float(puffs - 1)) * (0.35 + 0.75 * k)
+		var p := project(base + drift, h)
+		var rad := hex_size * (0.6 - 0.06 * i) * (0.55 + 0.45 * k)
+		var a := 0.22 * (1.0 - 0.1 * i) * k
+		draw_circle(p, maxf(rad, 2.0), Color(0.88, 0.74, 0.34, a))
+
+
+## Seed the ambient cloud field once the board size is known. Deterministic so clouds
+## don't reshuffle between redraws; positions span the board's cartesian bounds.
+func _ensure_clouds() -> void:
+	if not _clouds.is_empty() or engine == null:
+		return
+	var b := _board_bounds()
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 1337
+	for _i in 7:
+		_clouds.append({
+			"x": rng.randf_range(b.position.x, b.end.x),
+			"y": rng.randf_range(b.position.y, b.end.y),
+			"r": rng.randf_range(1.3, 2.6),
+			"spd": rng.randf_range(0.12, 0.32),
+			"ph": rng.randf_range(0.0, TAU),
+		})
+
+## Soft cloud shadows scudding across the ground, offset along the sun. Iso only.
+func _draw_cloud_shadows(k: float) -> void:
+	if k < 0.02 or engine == null:
+		return
+	var b := _board_bounds()
+	var shoff := SUN_SCREEN * CLOUD_HEIGHT * hex_size * 0.5
+	for c in _clouds:
+		var cx := wrapf(c["x"] + _anim_t * c["spd"], b.position.x - 3.0, b.end.x + 3.0)
+		var g := project(Vector2(cx, c["y"]), 0.0) + shoff
+		draw_circle(g, hex_size * c["r"] * 0.62, Color(0.10, 0.08, 0.05, 0.07 * k))
+
+## Drifting cloud billows high above the field — a cluster of soft white puffs per
+## cloud. Drawn last (sky layer), above ships and terrain. Iso only.
+func _draw_clouds(k: float) -> void:
+	if k < 0.02 or engine == null:
+		return
+	var b := _board_bounds()
+	for c in _clouds:
+		var cx := wrapf(c["x"] + _anim_t * c["spd"], b.position.x - 3.0, b.end.x + 3.0)
+		var cart := Vector2(cx, c["y"])
+		var r: float = c["r"]
+		var ph: float = c["ph"]
+		var puffs := 5
+		for j in puffs:
+			var pa := float(j) / float(puffs) * TAU + ph
+			var off := Vector2(cos(pa), sin(pa) * 0.5) * r * 0.5
+			draw_circle(project(cart + off, CLOUD_HEIGHT), hex_size * r * 0.42,
+					Color(0.97, 0.96, 0.92, 0.15 * k))
+		draw_circle(project(cart, CLOUD_HEIGHT), hex_size * r * 0.5,
+				Color(0.99, 0.98, 0.95, 0.17 * k))

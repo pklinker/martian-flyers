@@ -47,3 +47,12 @@ static func render_color(type: int) -> Color:
 		Type.TOWER: return Color(0.42, 0.42, 0.42, 0.88)
 		Type.DUST_STORM: return Color(0.85, 0.72, 0.28, 0.42)
 	return Color(0.5, 0.5, 0.5, 0.5)
+
+## World-height a feature rises to when the map is shown in isometric (presentation
+## only — rules never read this). Hills are broad and low; towers are tall spires;
+## dust has no solid massing (it's drawn as a drifting column, not an extrusion).
+static func render_height(type: int) -> float:
+	match type:
+		Type.HILL: return 0.55
+		Type.TOWER: return 1.5
+	return 0.0

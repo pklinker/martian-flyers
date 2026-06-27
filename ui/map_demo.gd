@@ -36,6 +36,9 @@ var phase_label: Label
 var ssd_overlay: Panel
 var ssd_toggle_btn: Button
 var ssd_stack: VBoxContainer          # holds the per-ship SSD panels
+var view_toggle_btn: Button           # overhead ⇄ isometric
+var rotate_l_btn: Button              # rotate field counter-clockwise (iso only)
+var rotate_r_btn: Button              # rotate field clockwise (iso only)
 
 # Game-over overlay (centered modal shown on victory/defeat/draw).
 var game_over_overlay: Panel
@@ -132,6 +135,9 @@ func _build_ui() -> void:
 	# System bank: view ops grouped, then "leave" actions styled apart (warn).
 	ssd_toggle_btn = _add_button(row1, "Hide Ships", _toggle_ssd, "system")
 	_add_button(row1, "Recenter", _on_recenter, "system")
+	view_toggle_btn = _add_button(row1, "View: Top-Down", _on_toggle_view, "system")
+	rotate_l_btn = _add_button(row1, "↶", _on_rotate_field.bind(-1), "system")
+	rotate_r_btn = _add_button(row1, "↷", _on_rotate_field.bind(1), "system")
 	_add_button(row1, "Save", _on_save, "system")
 	_add_button(row1, "Load", _on_load, "system")
 	_add_button(row1, "New Game", _new_game, "warn")
@@ -185,6 +191,7 @@ func _build_ui() -> void:
 	map.hex_clicked.connect(_on_hex_clicked)
 	map.map_pressed.connect(_on_map_pressed)
 	root.add_child(map)
+	_sync_view_buttons()              # rotate controls start disabled (top-down)
 
 	sound = SoundBank.new()
 	add_child(sound)
@@ -286,6 +293,26 @@ func _on_map_pressed() -> void:
 ## Frame the whole engagement again (after the player has panned/zoomed around).
 func _on_recenter() -> void:
 	map.frame_ships()
+
+
+## Toggle the tactical map between top-down and isometric. The map animates the
+## transition itself; we just relabel the button and gate the rotate controls.
+func _on_toggle_view() -> void:
+	map.toggle_view()
+	_sync_view_buttons()
+
+## Rotate the isometric field by one snapped step (counter-/clockwise). No-op in
+## top-down, where the controls are disabled.
+func _on_rotate_field(step: int) -> void:
+	map.rotate_field(step)
+
+## Reflect the map's current view mode in the toolbar: the toggle label and whether
+## the rotate buttons are live (rotation only applies in isometric).
+func _sync_view_buttons() -> void:
+	var iso: bool = map.view_mode == HexMapView.ViewMode.ISOMETRIC
+	view_toggle_btn.text = "View: Isometric" if iso else "View: Top-Down"
+	rotate_l_btn.disabled = not iso
+	rotate_r_btn.disabled = not iso
 
 
 ## Centered modal shown when the game ends; hidden at new-game start.

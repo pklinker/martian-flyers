@@ -19,6 +19,20 @@ primitive as fallback" — small diffs, easy to test.
 The architecture rule still applies: art is **pure UI**. No rules logic ever
 keys off a texture; the engine never knows assets exist.
 
+> **Addendum — Isometric view (2026):** The map now offers a tilted **isometric
+> view** alongside the flat top-down one (toolbar *View* toggle; *↶/↷* snap-rotate
+> the field through 6 orientations). It is a deliberate, scoped departure from the
+> flat-ink direction in §1 *for the isometric mode only*: hills/towers extrude into
+> sun-shaded prisms, flyers hover with cast shadows, and dust storms and a drifting
+> cloud layer add atmosphere. **Top-down view is unchanged** — the original flat
+> ink-and-parchment look in §1 is preserved exactly there (guarded by a unit test).
+> The 2.5D rendering is still pure `_draw()` vector work through one projection seam
+> in [`hex_map.gd`](ui/hex_map.gd); the look is tuned by the constants near the top of
+> that file (`ISO_TILT`, `ISO_HEIGHT`, `SHIP_ALT`, `SUN_SCREEN`) and the per-feature
+> heights in [`terrain_def.gd`](src/rules/terrain_def.gd) `render_height()`. When
+> authoring assets, treat §1 as the contract for **top-down**; isometric massing is
+> generated procedurally, not from textures.
+
 ## 1. Art direction
 
 **One sentence:** *ink-and-parchment pulp cartography — a 1912 adventure
