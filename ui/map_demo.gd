@@ -758,11 +758,26 @@ func _rebuild_alloc_bar() -> void:
 	lower.add_theme_constant_override("separation", 10)
 	alloc_bar.add_child(lower)
 
-	var stats_hb := _sub_panel("CREW", lower)
-	stats_hb.add_theme_constant_override("separation", 18)   # space the stepper groups apart
-	engine_label = _stepper_group(stats_hb, "ENGINE", _eng)
-	dc_label = _stepper_group(stats_hb, "DC", _dc)
-	lookout_label = _stepper_group(stats_hb, "LOOKOUT", _lookout) if _has_dust() else null
+	# Crew steppers only for what this ship can actually allocate: engine crew (when
+	# the engine is crew-driven, not a pilot's free engine), damage control (when it
+	# has DC stations), and lookouts (only when there's dust to spot through). A ship
+	# with none — like the free-engine, no-DC scout and one-man — shows no CREW panel,
+	# so the player isn't faced with steppers stuck on 0.
+	var show_engine := _active.def.engine_crew_per_speed > 0
+	var show_dc := _active.damage_control_capacity() > 0
+	var show_lookout := _has_dust()
+	engine_label = null
+	dc_label = null
+	lookout_label = null
+	if show_engine or show_dc or show_lookout:
+		var stats_hb := _sub_panel("CREW", lower)
+		stats_hb.add_theme_constant_override("separation", 18)   # space the stepper groups apart
+		if show_engine:
+			engine_label = _stepper_group(stats_hb, "ENGINE", _eng)
+		if show_dc:
+			dc_label = _stepper_group(stats_hb, "DC", _dc)
+		if show_lookout:
+			lookout_label = _stepper_group(stats_hb, "LOOKOUT", _lookout)
 
 	var act_hb := _sub_panel("", lower)
 	crew_label = UiTheme.label("", UiTheme.COL_TEXT, 14, true)
@@ -857,8 +872,10 @@ func _refresh_alloc_display() -> void:
 	var st: Dictionary = _alloc[p]
 	var pool := p.crew_pool()
 	var used := _plan_cost(p, st["guns"], int(st["engine"]), int(st["dc"]), int(st["lookout"]))
-	engine_label.text = str(engine_value)
-	dc_label.text = str(dc_value)
+	if engine_label != null:
+		engine_label.text = str(engine_value)
+	if dc_label != null:
+		dc_label.text = str(dc_value)
 	if lookout_label != null:
 		lookout_label.text = str(lookout_value)
 	# A free (pilot-flown) engine ignores crew; otherwise speed = engine crew ÷ cost.
