@@ -27,6 +27,29 @@ static func clear_resume() -> void:
 	if FileAccess.file_exists(RESUME_PATH):
 		DirAccess.remove_absolute(RESUME_PATH)
 
+## Manual quicksave slot. The title screen's Save copies the suspended battle
+## here; its Load sets `load_save` and the map restores this file on boot.
+const SAVE_PATH := "user://quicksave.flyersave"
+static var load_save: bool = false
+
+static func has_save() -> bool:
+	return FileAccess.file_exists(SAVE_PATH)
+
+## Copy the suspended battle into the quicksave slot. Returns OK, or an error if
+## there is no suspended battle to capture.
+static func save_suspended() -> int:
+	if not has_resume():
+		return ERR_DOES_NOT_EXIST
+	var data := FileAccess.get_file_as_bytes(RESUME_PATH)
+	if data.is_empty():
+		return ERR_FILE_CANT_READ
+	var f := FileAccess.open(SAVE_PATH, FileAccess.WRITE)
+	if f == null:
+		return FileAccess.get_open_error()
+	f.store_buffer(data)
+	f.close()
+	return OK
+
 
 static func set_battle(player: Array, ai: Array, points: int) -> void:
 	player_roster.assign(player)
