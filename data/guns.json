@@ -1,0 +1,139 @@
+{
+	"guns": [
+		{
+			"ammo": 0,
+			"armor_piercing": 0,
+			"crew_required": 0,
+			"display_name": "Light Radium Gun",
+			"id": "light_gun",
+			"is_torpedo": false,
+			"range_brackets": [
+				{
+					"damage": 2,
+					"max_range": 2,
+					"to_hit": 2
+				},
+				{
+					"damage": 1,
+					"max_range": 5,
+					"to_hit": 4
+				},
+				{
+					"damage": 1,
+					"max_range": 8,
+					"to_hit": 6
+				}
+			],
+			"reload_turns": 0,
+			"size": "LIGHT"
+		},
+		{
+			"ammo": 0,
+			"armor_piercing": 0,
+			"crew_required": 6,
+			"display_name": "Medium Radium Gun",
+			"id": "medium_gun",
+			"is_torpedo": false,
+			"range_brackets": [
+				{
+					"damage": 4,
+					"max_range": 3,
+					"to_hit": 3
+				},
+				{
+					"damage": 3,
+					"max_range": 7,
+					"to_hit": 4
+				},
+				{
+					"damage": 2,
+					"max_range": 12,
+					"to_hit": 5
+				}
+			],
+			"reload_turns": 1,
+			"size": "MEDIUM"
+		},
+		{
+			"ammo": 0,
+			"armor_piercing": 0,
+			"crew_required": 14,
+			"display_name": "Heavy Radium Gun",
+			"id": "heavy_gun",
+			"is_torpedo": false,
+			"range_brackets": [
+				{
+					"damage": 7,
+					"max_range": 4,
+					"to_hit": 3
+				},
+				{
+					"damage": 5,
+					"max_range": 10,
+					"to_hit": 4
+				},
+				{
+					"damage": 3,
+					"max_range": 18,
+					"to_hit": 5
+				}
+			],
+			"reload_turns": 2,
+			"size": "HEAVY"
+		},
+		{
+			"ammo": 3,
+			"armor_piercing": 3,
+			"crew_required": 1,
+			"display_name": "Aerial Radium Torpedo",
+			"id": "aerial_torpedo",
+			"is_torpedo": true,
+			"range_brackets": [
+				{
+					"damage": 6,
+					"max_range": 4,
+					"to_hit": 3
+				},
+				{
+					"damage": 6,
+					"max_range": 8,
+					"to_hit": 4
+				},
+				{
+					"damage": 5,
+					"max_range": 11,
+					"to_hit": 5
+				}
+			],
+			"reload_turns": 3,
+			"size": "HEAVY"
+		},
+		{
+			"ammo": 0,
+			"armor_piercing": 0,
+			"crew_required": 4,
+			"display_name": "Twin Turret Gun",
+			"id": "twin_turret",
+			"is_torpedo": false,
+			"range_brackets": [
+				{
+					"damage": 8,
+					"max_range": 3,
+					"to_hit": 3
+				},
+				{
+					"damage": 6,
+					"max_range": 7,
+					"to_hit": 4
+				},
+				{
+					"damage": 4,
+					"max_range": 12,
+					"to_hit": 5
+				}
+			],
+			"reload_turns": 0,
+			"size": "MEDIUM"
+		}
+	]
+}

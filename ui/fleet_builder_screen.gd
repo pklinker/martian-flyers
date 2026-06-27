@@ -47,7 +47,7 @@ var _budget := 250
 var _player: Array[StringName] = []
 
 # Node handles (assigned during _build_ui — the code-built equivalent of @onready).
-var budget_label: Label
+var budget_edit: LineEdit
 var spent_label: Label
 var launch_btn: Button
 var catalog_list: VBoxContainer
@@ -115,12 +115,20 @@ func _build_header() -> PanelContainer:
 	v.add_child(row)
 	row.add_child(_muted("BUDGET", 14))
 	row.add_child(_stepper("–", _budget_step.bind(-1)))
-	budget_label = Label.new()
-	budget_label.add_theme_font_size_override("font_size", 18)
-	budget_label.add_theme_color_override("font_color", COL_ACCENT)
-	budget_label.custom_minimum_size = Vector2(80, 0)
-	budget_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	row.add_child(budget_label)
+	# Editable budget: type a value directly (faster than stepping by 25), or use
+	# the +/- buttons. Commits on Enter or when the field loses focus, clamped to
+	# the legal range.
+	budget_edit = LineEdit.new()
+	budget_edit.text = str(_budget)
+	budget_edit.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	budget_edit.custom_minimum_size = Vector2(72, 0)
+	budget_edit.max_length = 5
+	budget_edit.add_theme_font_size_override("font_size", 18)
+	budget_edit.add_theme_color_override("font_color", COL_ACCENT)
+	budget_edit.text_submitted.connect(_on_budget_submitted)
+	budget_edit.focus_exited.connect(func() -> void: _apply_budget_text(budget_edit.text))
+	row.add_child(budget_edit)
+	row.add_child(_muted("pts", 14))
 	row.add_child(_stepper("+", _budget_step.bind(1)))
 	var gap := Control.new()
 	gap.size_flags_horizontal = Control.SIZE_EXPAND_FILL    # pushes spent to the right
@@ -284,6 +292,20 @@ func _budget_step(dir: int) -> void:
 	_refresh()
 
 
+func _on_budget_submitted(_text: String) -> void:
+	_apply_budget_text(budget_edit.text)
+	budget_edit.release_focus()
+
+
+## Parse the typed budget and commit it, clamped to the legal range. A blank or
+## junk entry falls back to the current budget (the field is rewritten on refresh).
+func _apply_budget_text(text: String) -> void:
+	var trimmed := text.strip_edges()
+	var n := int(trimmed) if trimmed.is_valid_int() else _budget
+	_budget = clampi(n, BUDGET_MIN, BUDGET_MAX)
+	_refresh()
+
+
 func _add_ship(id: StringName) -> void:
 	_player.append(id)
 	_refresh()
@@ -300,7 +322,9 @@ func _remove_ship(index: int) -> void:
 func _refresh() -> void:
 	var spent := FleetBuilder.roster_cost(_player)
 	var over := spent > _budget
-	budget_label.text = "%d pts" % _budget
+	# Don't fight the user mid-type: only rewrite the field when it isn't focused.
+	if not budget_edit.has_focus():
+		budget_edit.text = str(_budget)
 	spent_label.text = "SPENT  %d / %d" % [spent, _budget]
 	spent_label.add_theme_color_override("font_color", COL_WARN if over else COL_MUTED)
 

@@ -74,6 +74,13 @@ func _init() -> void:
 
 	_suite("Fleets")
 	_test_fleet_setup()
+	_test_catalog_migration()
+	_test_ship_loadouts()
+	_test_one_man_pilot_loss()
+	_test_rebalance_crew_budget()
+	_test_catalog_validation()
+	_test_catalog_mods()
+	_test_save_missing_dependency()
 	_test_deployment_rules()
 	_test_side_victory()
 	_test_fleet_cadence()
@@ -304,89 +311,95 @@ func _test_range_brackets() -> void:
 	_check_eq(heavy.max_range(), 18, "heavy gun max range")
 
 func _test_guns_bearing() -> void:
-	var scout := ShipState.create(ShipLibrary.ship(&"helium_scout"), 0, Vector2i(0, 0), 0)
-	scout.apply_allocation({ "guns": [0, 1, 2, 3], "engine": 0, "damage_control": 0 })
-	# Target dead ahead at range 2: bow gun (arcs 5,0,1) and chase gun (0,1,5)
-	# bear; the side guns (1,2) and (4,5) do not.
-	var bearing_guns := scout.guns_bearing(Vector2i(0, -2))
-	_check_eq(bearing_guns, [0, 3], "dead-ahead target: bow + chase guns bear")
-	# Target dead ahead but at range 9: light bow gun (max 8) drops out,
-	# chase gun (medium, max 12) still bears.
-	bearing_guns = scout.guns_bearing(Vector2i(0, -9))
-	_check_eq(bearing_guns, [3], "range 9 dead ahead: only chase gun bears")
+	# The cruiser keeps arc-limited mounts (bow/stern medium, port/stbd heavy), so
+	# it's the fixture for bearing/arc mechanics now the scout carries a 360° turret.
+	var cruiser := ShipState.create(ShipLibrary.ship(&"zodanga_cruiser"), 0, Vector2i(0, 0), 0)
+	cruiser.apply_allocation({ "guns": [0, 1, 2, 3], "engine": 0, "damage_control": 0 })
+	# Dead ahead: only the bow medium (arcs 5,0,1) bears.
+	_check_eq(cruiser.guns_bearing(Vector2i(0, -2)), [0], "dead-ahead target: bow gun bears")
+	# Dead astern: only the stern medium (arcs 2,3,4) bears.
+	_check_eq(cruiser.guns_bearing(Vector2i(0, 2)), [3], "dead-astern target: stern gun bears")
+	# Beyond the bow medium's reach (max 12), nothing bears dead ahead.
+	_check_eq(cruiser.guns_bearing(Vector2i(0, -13)).size(), 0,
+			"dead-ahead beyond bow range: no gun bears")
 	# Unmanned guns never bear.
-	scout.apply_allocation({ "guns": [], "engine": 0, "damage_control": 0 })
-	_check_eq(scout.guns_bearing(Vector2i(0, -2)).size(), 0, "unmanned guns cannot fire")
+	cruiser.apply_allocation({ "guns": [], "engine": 0, "damage_control": 0 })
+	_check_eq(cruiser.guns_bearing(Vector2i(0, -2)).size(), 0, "unmanned guns cannot fire")
 
 func _test_guns_bearing_from() -> void:
-	var scout := ShipState.create(ShipLibrary.ship(&"helium_scout"), 0, Vector2i(8, 8), 0)
-	scout.apply_allocation({ "guns": [0, 1, 2, 3], "engine": 0, "damage_control": 0 })
-	# From the real position/facing the query matches guns_bearing.
-	_check_eq(scout.guns_bearing(Vector2i(8, 5)), [0, 3],
-			"guns_bearing_from at own pose matches guns_bearing (bow + chase)")
-	# Same target, but evaluated as if the ship were facing SE (2): the north
-	# target falls into the port gun's arc instead of the bow's.
-	_check_eq(scout.guns_bearing_from(Vector2i(8, 8), 2, Vector2i(8, 5)), [2],
-			"hypothetical facing changes which mounts bear (port gun only)")
+	var cruiser := ShipState.create(ShipLibrary.ship(&"zodanga_cruiser"), 0, Vector2i(8, 8), 0)
+	cruiser.apply_allocation({ "guns": [0, 1, 2, 3], "engine": 0, "damage_control": 0 })
+	# From the real pose, the north target is dead ahead → bow gun bears.
+	_check_eq(cruiser.guns_bearing(Vector2i(8, 5)), [0],
+			"guns_bearing_from at own pose matches guns_bearing (bow)")
+	# Re-evaluated as if facing SE (2): the north target falls aft-port (relative
+	# bearing 4), into both the port heavy (4,5) and stern medium (2,3,4) arcs.
+	_check_eq(cruiser.guns_bearing_from(Vector2i(8, 8), 2, Vector2i(8, 5)), [2, 3],
+			"hypothetical facing changes which mounts bear (port + stern)")
 
 func _test_fire_preview() -> void:
-	var scout := ShipState.create(ShipLibrary.ship(&"helium_scout"), 0, Vector2i(0, 0), 0)
-	scout.apply_allocation({ "guns": [0, 1, 2, 3], "engine": 0, "damage_control": 0 })
-	# Bow gun (light) at range 2 dead ahead: near bracket, 2+ to hit for 2 dmg.
-	var p := scout.fire_preview(0, Vector2i(0, -2))
+	var cruiser := ShipState.create(ShipLibrary.ship(&"zodanga_cruiser"), 0, Vector2i(0, 0), 0)
+	cruiser.apply_allocation({ "guns": [0, 1, 2, 3], "engine": 0, "damage_control": 0 })
+	# Bow medium at range 2 dead ahead: near bracket, 3+ to hit for 4 dmg.
+	var p := cruiser.fire_preview(0, Vector2i(0, -2))
 	_check(p["bears"], "bow gun bears dead ahead at range 2")
 	_check_eq(p["range"], 2, "preview reports the range")
-	_check_eq(p["to_hit"], 2, "near bracket to-hit is 2+")
-	_check_eq(p["damage"], 2, "near bracket damage is 2")
-	# Starboard gun (arcs 1,2) cannot bear on a dead-ahead target.
-	_check_eq(scout.fire_preview(1, Vector2i(0, -2))["reason"], "out of arc",
+	_check_eq(p["to_hit"], 3, "near bracket to-hit is 3+")
+	_check_eq(p["damage"], 4, "near bracket damage is 4")
+	# Starboard heavy (arcs 1,2) cannot bear on a dead-ahead target.
+	_check_eq(cruiser.fire_preview(1, Vector2i(0, -2))["reason"], "out of arc",
 			"off-arc gun reports out of arc")
-	# Bow light gun past its max range (8): out of range.
-	_check_eq(scout.fire_preview(0, Vector2i(0, -9))["reason"], "out of range",
-			"light gun beyond range 8 reports out of range")
+	# Bow medium past its max range (12): out of range.
+	_check_eq(cruiser.fire_preview(0, Vector2i(0, -13))["reason"], "out of range",
+			"medium gun beyond range 12 reports out of range")
 	# Unmanned guns report unmanned, not a false bearing.
-	scout.apply_allocation({ "guns": [], "engine": 0, "damage_control": 0 })
-	_check_eq(scout.fire_preview(0, Vector2i(0, -2))["reason"], "unmanned",
+	cruiser.apply_allocation({ "guns": [], "engine": 0, "damage_control": 0 })
+	_check_eq(cruiser.fire_preview(0, Vector2i(0, -2))["reason"], "unmanned",
 			"unmanned gun reports unmanned")
 
 func _test_engine_crew_speed_gate() -> void:
-	var scout := ShipState.create(ShipLibrary.ship(&"helium_scout"), 0, Vector2i(0, 0), 0)
-	# The engine-box ceiling is unchanged by crew (rated top speed).
-	_check_eq(scout.effective_max_speed(), 8, "scout engine-box ceiling is 8")
+	# The cruiser has a crew-gated engine (15 crew per hex, box ceiling 6) — the
+	# fixture for the engine economy now small ships fly on a free pilot's engine.
+	var cruiser := ShipState.create(ShipLibrary.ship(&"zodanga_cruiser"), 0, Vector2i(0, 0), 0)
+	_check_eq(cruiser.effective_max_speed(), 6, "cruiser engine-box ceiling is 6")
+	_check_eq(cruiser.def.engine_crew_per_speed, 15, "cruiser costs 15 engine crew per hex")
 	# No engine crew powering the radium engine: the ship can't make way.
-	scout.apply_allocation({ "guns": [], "engine": 0, "damage_control": 0 })
-	_check_eq(scout.usable_max_speed(), 0, "no engine crew: no way on")
-	# Two engine crew at rate 2 drive speed 4.
-	scout.apply_allocation({ "guns": [], "engine": 2, "damage_control": 0 })
-	_check_eq(scout.usable_max_speed(), 4, "2 engine crew drive speed 4")
-	# Crew beyond what the boxes allow can't exceed the engine-box ceiling.
-	scout.apply_allocation({ "guns": [], "engine": 6, "damage_control": 0 })
-	_check_eq(scout.usable_max_speed(), 8, "engine crew can't push past the box ceiling")
-	# Crew needed for a target speed rounds up.
-	_check_eq(scout.engine_crew_for_speed(8), 4, "speed 8 needs 4 engine crew")
-	_check_eq(scout.engine_crew_for_speed(3), 2, "speed 3 needs 2 engine crew (ceil)")
+	cruiser.apply_allocation({ "guns": [], "engine": 0, "damage_control": 0 })
+	_check_eq(cruiser.usable_max_speed(), 0, "no engine crew: no way on")
+	# 30 engine crew (15/hex) drive speed 2; partial crew floors down.
+	cruiser.apply_allocation({ "guns": [], "engine": 30, "damage_control": 0 })
+	_check_eq(cruiser.usable_max_speed(), 2, "30 engine crew drive speed 2 (15/hex)")
+	cruiser.apply_allocation({ "guns": [], "engine": 44, "damage_control": 0 })
+	_check_eq(cruiser.usable_max_speed(), 2, "extra crew below the next hex floors to 2")
+	# The whole pool to the engine reaches — but cannot exceed — the box ceiling.
+	cruiser.apply_allocation({ "guns": [], "engine": 120, "damage_control": 0 })
+	_check_eq(cruiser.usable_max_speed(), 6, "full engine crew reaches the box ceiling (speed 6)")
+	# Crew needed for a target speed is the per-hex cost times the target.
+	_check_eq(cruiser.engine_crew_for_speed(6), 90, "speed 6 needs 90 engine crew")
+	_check_eq(cruiser.engine_crew_for_speed(2), 30, "speed 2 needs 30 engine crew")
 	# Damaged engine boxes lower the ceiling even with crew to spare.
-	scout.systems_remaining[ShipDef.SystemType.ENGINE] = 2  # of 4 -> ceil(8*0.5)=4
-	scout.apply_allocation({ "guns": [], "engine": 6, "damage_control": 0 })
-	_check_eq(scout.usable_max_speed(), 4, "half engine boxes cap usable speed at 4 regardless of crew")
+	cruiser.systems_remaining[ShipDef.SystemType.ENGINE] = 3  # of 6 -> ceil(6*0.5)=3
+	cruiser.apply_allocation({ "guns": [], "engine": 120, "damage_control": 0 })
+	_check_eq(cruiser.usable_max_speed(), 3, "half engine boxes cap usable speed at 3 regardless of crew")
 
 func _test_reload_and_crew_allocation() -> void:
-	var scout := ShipState.create(ShipLibrary.ship(&"helium_scout"), 0, Vector2i(0, 0), 0)
-	# Scout crew pool is 6; manning all four guns costs 1+1+1+2 = 5. Legal.
-	_check(scout.apply_allocation({ "guns": [0, 1, 2, 3], "engine": 1, "damage_control": 0 }),
+	var cruiser := ShipState.create(ShipLibrary.ship(&"zodanga_cruiser"), 0, Vector2i(0, 0), 0)
+	# Cruiser crew pool is 120; manning all four guns costs 6+14+14+6 = 40, leaving
+	# 80 for the engine room. Exactly at pool is legal; one more crew is not.
+	_check(cruiser.apply_allocation({ "guns": [0, 1, 2, 3], "engine": 80, "damage_control": 0 }),
 			"allocation exactly at crew pool is accepted")
-	_check(not scout.apply_allocation({ "guns": [0, 1, 2, 3], "engine": 1, "damage_control": 1 }),
+	_check(not cruiser.apply_allocation({ "guns": [0, 1, 2, 3], "engine": 81, "damage_control": 0 }),
 			"over-allocation is rejected")
-	# Reload: fire the chase gun (reload 1), confirm it goes on cooldown and ticks back.
-	scout.apply_allocation({ "guns": [3], "engine": 0, "damage_control": 0 })
-	var target := ShipState.create(ShipLibrary.ship(&"zodanga_cruiser"), 1, Vector2i(0, -3), 3)
+	# Reload: fire the bow medium (reload 1), confirm it goes on cooldown and ticks back.
+	cruiser.apply_allocation({ "guns": [0], "engine": 0, "damage_control": 0 })
+	var target := ShipState.create(ShipLibrary.ship(&"helium_battleship"), 1, Vector2i(0, -3), 3)
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 1
-	DamageResolver.resolve_shot(scout, 3, target, rng)
-	_check_eq(int(scout.gun_states[3]["reload"]), 1, "medium gun on 1-turn cooldown after firing")
-	_check(not scout.gun_ready(3), "gun not ready while reloading")
-	scout.tick_reloads()
-	_check(scout.gun_ready(3), "gun ready again after reload ticks down")
+	DamageResolver.resolve_shot(cruiser, 0, target, rng)
+	_check_eq(int(cruiser.gun_states[0]["reload"]), 1, "medium gun on 1-turn cooldown after firing")
+	_check(not cruiser.gun_ready(0), "gun not ready while reloading")
+	cruiser.tick_reloads()
+	_check(cruiser.gun_ready(0), "gun ready again after reload ticks down")
 
 
 # ---------------------------------------------------------------------------
@@ -490,10 +503,10 @@ func _test_torpedo_armor_piercing() -> void:
 
 
 func _test_torpedo_ammo_and_gating() -> void:
-	const TUBE := 4
+	const TUBE := 1   # scout: mount 0 = turret, mount 1 = torpedo tube
 	var scout := ShipState.create(ShipLibrary.ship(&"helium_scout"), 0, Vector2i(0, 0), 0)
 	var enemy := ShipState.create(ShipLibrary.ship(&"zodanga_cruiser"), 1, Vector2i(0, -3), 3)
-	_check_eq(str(scout.def.gun_mounts[TUBE]["label"]), "Torpedo Tube", "tube is mount index 4")
+	_check_eq(str(scout.def.gun_mounts[TUBE]["label"]), "Torpedo Tube", "tube is mount index 1")
 	_check_eq(int(scout.gun_states[TUBE]["ammo"]), 3, "tube starts with a full rack of 3")
 	# Man only the tube so the ammo machinery is isolated from the deck guns.
 	scout.apply_allocation({ "guns": [TUBE], "engine": 0, "damage_control": 0 })
@@ -507,8 +520,14 @@ func _test_torpedo_ammo_and_gating() -> void:
 		scout.gun_states[TUBE]["reload"] = 0   # ignore the long reload for the ammo probe
 	_check_eq(int(scout.gun_states[TUBE]["ammo"]), 0, "rack empty after three launches")
 	_check(not scout.gun_ready(TUBE), "empty tube is not ready even when manned and bearing")
-	_check_eq(str(scout.fire_preview(TUBE, enemy.hex)["reason"]), "no torpedoes",
+	_check_eq(str(scout.fire_preview(TUBE, enemy.hex)["reason"]), "out of ammo",
 			"empty tube preview explains why it can't fire")
+	# Even mid-reload, a spent tube reads "out of ammo", not "reloading" — the
+	# reload counter on a no-ammo tube would never produce another torpedo.
+	scout.gun_states[TUBE]["reload"] = 2
+	_check_eq(str(scout.fire_preview(TUBE, enemy.hex)["reason"]), "out of ammo",
+			"a spent tube reads 'out of ammo' even with a reload counter pending")
+	scout.gun_states[TUBE]["reload"] = 0
 	_check(not (TUBE in scout.guns_bearing(enemy.hex)), "empty tube drops out of guns_bearing")
 	# An ordinary deck gun is untouched by all of this.
 	scout.apply_allocation({ "guns": [0], "engine": 0, "damage_control": 0 })
@@ -578,13 +597,15 @@ func _test_damage_control_claws_back() -> void:
 	var engine := TurnEngine.new()
 	engine.setup(1)
 	engine.rng.seed = seed_val
-	var s := engine.ships[0]   # the scout, falls at 1
+	# The cruiser has damage control (the scout is now a no-DC flyer); put it on its
+	# falling line and let the repair party claw it back before the grounding check.
+	var s := engine.ships[1]   # the cruiser, falls at 3
 	s.systems_remaining[ShipDef.SystemType.BUOYANCY] = s.def.grounding_threshold  # on the line
 	s.allocation = { "damage_control": 1 }
-	_check(not s.is_buoyant(), "scout starts the upkeep at/below its falling line")
+	_check(not s.is_buoyant(), "cruiser starts the upkeep at/below its falling line")
 	# Keep the enemy alive and clear so this is the only victory trigger in play.
 	engine.run_upkeep()
-	_check(not s.grounded, "damage control lifts the scout back above the line before grounding")
+	_check(not s.grounded, "damage control lifts the cruiser back above the line before grounding")
 	_check(s.is_buoyant(), "patched tank restores buoyancy")
 	_check_eq(engine.phase, TurnEngine.Phase.ALLOCATION,
 			"clawed-back flyer does not trigger game over")
@@ -596,9 +617,9 @@ func _test_damage_control_claws_back() -> void:
 
 func _test_derived_capabilities() -> void:
 	var cruiser := ShipState.create(ShipLibrary.ship(&"zodanga_cruiser"), 0, Vector2i(0, 0), 0)
-	_check_eq(cruiser.effective_max_speed(), 5, "undamaged cruiser max speed")
+	_check_eq(cruiser.effective_max_speed(), 6, "undamaged cruiser max speed")
 	cruiser.systems_remaining[ShipDef.SystemType.ENGINE] = 3  # of 6
-	_check_eq(cruiser.effective_max_speed(), 3, "half engines: ceil(5 * 0.5) = 3")
+	_check_eq(cruiser.effective_max_speed(), 3, "half engines: ceil(6 * 0.5) = 3")
 	cruiser.systems_remaining[ShipDef.SystemType.ENGINE] = 0
 	_check_eq(cruiser.effective_max_speed(), 0, "no engines: dead in the air")
 	# Rudder damage worsens turn mode.
@@ -675,7 +696,7 @@ func _test_terrain_dust() -> void:
 func _test_terrain_fire_preview() -> void:
 	var scout := ShipState.create(ShipLibrary.ship(&"helium_scout"), 0, Vector2i(0, 0), 0)
 	scout.apply_allocation({ "guns": [0], "engine": 0, "damage_control": 0 })
-	# Bow light gun at range 2 dead ahead: near bracket, 2+ to hit.
+	# Turret at range 2 dead ahead bears (360° mount).
 	# Hill at the intermediate hex (0,-1) should report LOS blocked.
 	var hill_terrain := { Vector2i(0, -1): TerrainDef.Type.HILL }
 	var pv_blocked := scout.fire_preview(0, Vector2i(0, -2), hill_terrain)
@@ -687,12 +708,12 @@ func _test_terrain_fire_preview() -> void:
 	var pv_dust := scout.fire_preview(0, Vector2i(0, -2), dust_terrain)
 	_check(pv_dust["bears"], "fire_preview: dust does not block the shot")
 	_check_eq(pv_dust["dust_penalty"], 1, "fire_preview reports dust_penalty 1")
-	_check_eq(pv_dust["to_hit"], 3, "dust raises to-hit from 2 to 3")
+	_check_eq(pv_dust["to_hit"], 4, "dust raises the turret to-hit from 3 to 4")
 	# One lookout crew cancels the dust penalty completely.
 	scout.apply_allocation({ "guns": [0], "engine": 0, "damage_control": 0, "lookout": 1 })
 	var pv_lookout := scout.fire_preview(0, Vector2i(0, -2), dust_terrain)
 	_check_eq(pv_lookout["dust_penalty"], 0, "lookout cancels the dust penalty")
-	_check_eq(pv_lookout["to_hit"], 2, "to-hit restored to 2 with lookout countering dust")
+	_check_eq(pv_lookout["to_hit"], 3, "to-hit restored to 3 with lookout countering dust")
 	# guns_bearing respects LOS: hill blocks the mount from appearing in bearing list.
 	scout.apply_allocation({ "guns": [0], "engine": 0, "damage_control": 0 })
 	var bearing_no_terrain := scout.guns_bearing(Vector2i(0, -2))
@@ -759,7 +780,7 @@ func _test_listing() -> void:
 			break
 	var engine := TurnEngine.new()
 	engine.setup(1)
-	var s := engine.ships[0]   # scout
+	var s := engine.ships[1]   # cruiser (has damage control; the scout no longer does)
 	s.port_buoyancy = 2
 	s.stbd_buoyancy = 4
 	s.systems_remaining[ShipDef.SystemType.BUOYANCY] = 6
@@ -780,7 +801,7 @@ func _test_ai_evaluator() -> void:
 	engine.setup(1)
 	var scout: ShipState = engine.ships[0]
 	var cruiser: ShipState = engine.ships[1]
-	scout.apply_allocation({ "guns": [0, 1, 2, 3], "engine": 0, "damage_control": 0 })
+	scout.apply_allocation({ "guns": [0, 1], "engine": 0, "damage_control": 0 })   # turret + tube
 	cruiser.apply_allocation({ "guns": [0, 1, 2, 3], "engine": 0, "damage_control": 0 })
 	var scout_ai := ShipAI.for_ship(scout.def)
 	var cruiser_ai := ShipAI.for_ship(cruiser.def)
@@ -846,14 +867,14 @@ func _test_ai_armor_awareness() -> void:
 	for _k in 4:
 		ehex = HexMath.neighbor(ehex, 0)
 	var en := ShipState.create(ShipLibrary.ship(&"zodanga_cruiser"), 1, ehex, 3)
-	sc.apply_allocation({ "guns": [0, 4], "engine": 0, "damage_control": 0 })   # bow gun + tube
+	sc.apply_allocation({ "guns": [0, 1], "engine": 0, "damage_control": 0 })   # turret + tube
 	var sai := ShipAI.for_ship(sc.def)
 	var th := HexMath.struck_facing(en.hex, en.facing, sc.hex)
 	var fire_hard := sai.choose_fire(sc, en)
-	_check(4 in fire_hard, "torpedo looses against hard armour")
+	_check(1 in fire_hard, "torpedo looses against hard armour")
 	en.armor_remaining[th] = 1   # breach the struck facing
 	var fire_soft := sai.choose_fire(sc, en)
-	_check(not (4 in fire_soft), "torpedo held once the facing is breached and a gun bears")
+	_check(not (1 in fire_soft), "torpedo held once the facing is breached and a gun bears")
 	_check(0 in fire_soft, "the deck gun still fires into the breach")
 
 
@@ -1077,6 +1098,283 @@ func _test_fleet_setup() -> void:
 			rosters_on_board = false
 	_check(rosters_on_board, "every roster-deployed ship is on the board")
 	_check(_no_ship_stacks(rosters), "no two roster-deployed ships share a hex")
+
+
+## The data files are the single source of truth: the bundled res://data/*.json
+## loads through the real ShipCatalog, every def survives a to_dict→from_dict
+## round-trip, and the facade resolves through the active catalog. (Two defs are
+## equal iff their to_dict() snapshots match — to_dict captures every field —
+## compared via JSON.stringify, a stable compare since key order is fixed.)
+func _test_catalog_migration() -> void:
+	# Core only — point at a dir with no mods so we exercise the bundled data alone.
+	var cat := ShipCatalog.new("res://__no_such_mod_dir__/")
+
+	# The shipped catalog loads with the expected hulls and guns present.
+	for gid in [&"light_gun", &"medium_gun", &"heavy_gun", &"aerial_torpedo"]:
+		_check(cat.has_gun(gid), "shipped guns.json provides %s" % gid)
+	for sid in [&"helium_scout", &"zodanga_cruiser", &"one_man_flyer", &"helium_battleship"]:
+		_check(cat.has_ship(sid), "shipped ships.json provides %s" % sid)
+
+	# Every def round-trips through serialization with no loss (enum + nested arrays).
+	var guns_ok := true
+	for gid in cat.gun_ids():
+		var g := cat.gun(gid)
+		if JSON.stringify(GunDef.from_dict(g.to_dict()).to_dict()) != JSON.stringify(g.to_dict()):
+			guns_ok = false
+	_check(guns_ok, "every shipped gun survives a to_dict→from_dict round-trip")
+	var ships_ok := true
+	for sid in cat.ship_ids():
+		var s := cat.ship(sid)
+		if JSON.stringify(ShipDef.from_dict(s.to_dict()).to_dict()) != JSON.stringify(s.to_dict()):
+			ships_ok = false
+	_check(ships_ok, "every shipped ship survives a to_dict→from_dict round-trip")
+
+	# The facade reads the same catalog data (delegation works for the ~30 callers).
+	_check_eq(ShipLibrary.ship(&"helium_scout").display_name, "Helium Scout Flyer",
+			"ShipLibrary facade resolves a ship through the active catalog")
+
+
+## Diff 2 (realism rebalance): every hull, with engine crew reserved for a cruising
+## speed, can still man its full surviving battery within its (now realistic) CREW
+## pool. Encodes the fix for the original "crew too small" complaint so it can't
+## silently regress — while the engine cost keeps speed competing for the pool.
+## The hand-authored ship specs: crews, speeds, acceleration, weapon loadouts, and
+## the per-tube torpedo magazines. Locks the design so a future data edit (or a
+## serialization regression like the dropped per-mount ammo) can't silently break it.
+func _test_ship_loadouts() -> void:
+	var s := ShipState.create(ShipLibrary.ship(&"helium_scout"), 0, Vector2i(0, 0), 0)
+	_check_eq(s.crew_pool(), 6, "scout crew is 6")
+	_check_eq(s.effective_max_speed(), 12, "scout top speed 12")
+	_check_eq(s.max_speed_change(), 4, "scout acceleration 4")
+	_check_eq(s.damage_control_capacity(), 0, "scout has no damage control")
+	_check_eq(s.def.gun_mounts.size(), 2, "scout has two mounts (turret + tube)")
+	_check_eq((s.def.gun_mounts[0]["arcs"] as Array).size(), 6, "scout turret covers all 6 arcs (360°)")
+	_check_eq(int(s.gun_states[1]["ammo"]), 3, "scout torpedo tube holds 3")
+
+	var o := ShipState.create(ShipLibrary.ship(&"one_man_flyer"), 0, Vector2i(0, 0), 0)
+	_check_eq(o.crew_pool(), 1, "one-man crew is 1")
+	_check_eq(o.effective_max_speed(), 16, "one-man top speed 16")
+	_check_eq(o.max_speed_change(), 6, "one-man acceleration 6")
+	_check_eq(o.damage_control_capacity(), 0, "one-man has no damage control")
+	_check_eq(int(o.gun_states[1]["ammo"]), 1, "one-man torpedo is single-shot")
+	# Fighter, not a gunboat: the lone pilot fires the nose gun AND the torpedo in
+	# the same turn (the nose gun takes no dedicated crew).
+	_check(o.apply_allocation({ "guns": [0, 1], "engine": 0, "damage_control": 0 }),
+			"one-man can man both its weapons at once")
+	_check(o.gun_states[0]["manned"] and o.gun_states[1]["manned"],
+			"both the nose gun and the torpedo are manned together")
+
+	_check_eq(ShipLibrary.ship(&"zodanga_cruiser").base_max_speed, 6, "cruiser top speed 6")
+	_check_eq(ShipState.create(ShipLibrary.ship(&"zodanga_cruiser"), 0, Vector2i.ZERO, 0).max_speed_change(),
+			2, "cruiser acceleration 2")
+	_check_eq(ShipLibrary.ship(&"helium_battleship").base_max_speed, 4, "battleship top speed 4")
+	_check_eq(ShipState.create(ShipLibrary.ship(&"helium_battleship"), 0, Vector2i.ZERO, 0).max_speed_change(),
+			2, "battleship acceleration 2")
+
+
+## The one-man fighter is its pilot: the single crew box is the whole crew, so one
+## crew casualty empties the pool and the ship is finished (out of action, and the
+## victory check wrecks it). A bigger hull shrugs off the same hit.
+func _test_one_man_pilot_loss() -> void:
+	var engine := TurnEngine.new()
+	engine.setup_fleet([
+		{ "ship_id": &"one_man_flyer", "side": 0, "hex": Vector2i(10, 10), "facing": 0 },
+		{ "ship_id": &"helium_battleship", "side": 1, "hex": Vector2i(34, 10), "facing": 3 },
+	], 1)
+	var om := engine.ships[0]
+	_check_eq(om.crew_pool(), 1, "one-man starts with its single crew box")
+	# Strike the crew (no crit roll, so it's a clean box loss) — pool hits zero.
+	DamageResolver._hit_system(om, ShipDef.SystemType.CREW, engine.rng, 0, false)
+	_check_eq(om.crew_pool(), 0, "a single crew casualty empties the one-man's pool")
+	_check(engine.is_out_of_action(om), "a crewless one-man is out of action")
+	# The victory pass marks the crew-wiped fighter destroyed and ends the fight.
+	engine._check_victory()
+	_check(om.is_destroyed, "losing the pilot destroys the one-man flyer")
+	_check_eq(engine.phase, TurnEngine.Phase.GAME_OVER,
+			"the battleship wins once the lone fighter's pilot is lost")
+
+
+func _test_rebalance_crew_budget() -> void:
+	for sid in ShipLibrary.ship_ids():
+		var def := ShipLibrary.ship(sid)
+		var s := ShipState.create(def, 0, Vector2i(0, 0), 0)
+		var gun_crew := 0
+		for m in def.gun_mounts:
+			gun_crew += ShipLibrary.gun(m["gun_id"]).crew_required
+		if def.engine_crew_per_speed > 0:
+			# Crew-gated engine (capital ships): the full battery is workable at a
+			# cruising speed, but running flat-out costs more than the pool can
+			# spare alongside the guns — speed competes for the crew.
+			var cruise: int = maxi(1, def.base_max_speed / 2)
+			_check(s.engine_crew_for_speed(cruise) + gun_crew <= s.crew_pool(),
+					"%s can man its whole battery at cruise within its crew pool" % sid)
+			_check(s.engine_crew_for_speed(def.base_max_speed) + gun_crew > s.crew_pool(),
+					"%s cannot run flat-out AND man every gun (speed still competes)" % sid)
+		else:
+			# Pilot-flown small ships: the engine takes no crew and reaches its rated
+			# top speed regardless, leaving the tiny crew for guns/torpedoes.
+			_check_eq(s.engine_crew_for_speed(def.base_max_speed), 0,
+					"%s has a free (crewless) engine" % sid)
+			s.apply_allocation({ "guns": [], "engine": 0, "damage_control": 0 })
+			_check_eq(s.usable_max_speed(), def.base_max_speed,
+					"%s reaches full speed with no engine crew" % sid)
+
+
+const TEST_MOD_ROOT := "user://test_mods"
+
+## Write a JSON object to `path`, creating parent dirs. For building temp mods.
+func _write_json(path: String, data: Dictionary) -> void:
+	DirAccess.make_dir_recursive_absolute(path.get_base_dir())
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	f.store_string(JSON.stringify(data))
+	f.close()
+
+## Recursively delete a directory (no built-in for this in Godot).
+func _purge_dir(path: String) -> void:
+	if not DirAccess.dir_exists_absolute(path):
+		return
+	var d := DirAccess.open(path)
+	d.list_dir_begin()
+	var entry := d.get_next()
+	while entry != "":
+		var full := path.path_join(entry)
+		if d.current_is_dir():
+			_purge_dir(full)
+		else:
+			DirAccess.remove_absolute(full)
+		entry = d.get_next()
+	d.list_dir_end()
+	DirAccess.remove_absolute(path)
+
+
+## Step 4: a malformed entry is skipped with the rest of the layer intact —
+## never crashes the load, never poisons the catalog. (These deliberately trip
+## validation, so ERROR lines in the output below are EXPECTED.)
+func _test_catalog_validation() -> void:
+	_purge_dir(TEST_MOD_ROOT)
+	var good_gun := { "id": "mod_gun", "display_name": "Mod Gun", "size": "LIGHT",
+		"reload_turns": 0, "crew_required": 1,
+		"range_brackets": [{ "max_range": 2, "to_hit": 2, "damage": 2 }] }
+	var bad_guns := [
+		{ "id": "g_nosize", "display_name": "x", "reload_turns": 0, "crew_required": 1,
+			"range_brackets": [{ "max_range": 2, "to_hit": 2, "damage": 2 }] },        # missing size
+		{ "id": "g_badsize", "display_name": "x", "size": "PLASMA", "reload_turns": 0,
+			"crew_required": 1, "range_brackets": [{ "max_range": 2, "to_hit": 2, "damage": 2 }] },
+		{ "id": "g_noranges", "display_name": "x", "size": "LIGHT", "reload_turns": 0,
+			"crew_required": 1, "range_brackets": [] },                                 # empty
+		{ "id": "g_order", "display_name": "x", "size": "LIGHT", "reload_turns": 0, "crew_required": 1,
+			"range_brackets": [{ "max_range": 4, "to_hit": 2, "damage": 2 },
+				{ "max_range": 2, "to_hit": 2, "damage": 1 }] },                        # not increasing
+	]
+	_write_json(TEST_MOD_ROOT + "/zz_bad/guns.json", { "guns": [good_gun] + bad_guns })
+
+	# A base ship (clone the battleship) plus corrupted variants.
+	var base_ship := ShipLibrary.ship(&"helium_battleship").to_dict()
+	var bad_armor := base_ship.duplicate(true); bad_armor["id"] = "s_armor"; bad_armor["armor"] = [1, 2, 3]
+	var bad_sys := base_ship.duplicate(true); bad_sys["id"] = "s_sys"; bad_sys["systems"]["WARP"] = 3
+	var bad_arc := base_ship.duplicate(true); bad_arc["id"] = "s_arc"
+	bad_arc["gun_mounts"] = [{ "gun_id": "heavy_gun", "arcs": [9], "label": "x" }]
+	_write_json(TEST_MOD_ROOT + "/zz_bad/ships.json", { "ships": [bad_armor, bad_sys, bad_arc] })
+
+	var cat := ShipCatalog.new(TEST_MOD_ROOT + "/")
+	_check(cat.has_gun(&"mod_gun"), "a valid mod gun loads")
+	_check(not cat.has_gun(&"g_nosize"), "gun missing 'size' is rejected")
+	_check(not cat.has_gun(&"g_badsize"), "gun with unknown size is rejected")
+	_check(not cat.has_gun(&"g_noranges"), "gun with empty range_brackets is rejected")
+	_check(not cat.has_gun(&"g_order"), "gun with non-increasing ranges is rejected")
+	_check(not cat.has_ship(&"s_armor"), "ship with armor length != 6 is rejected")
+	_check(not cat.has_ship(&"s_sys"), "ship with unknown system is rejected")
+	_check(not cat.has_ship(&"s_arc"), "ship with arc outside 0..5 is rejected")
+	# Core survives a bad mod entirely.
+	_check(cat.has_ship(&"helium_scout") and cat.has_gun(&"heavy_gun"),
+			"core ships/guns intact despite a malformed mod")
+	_purge_dir(TEST_MOD_ROOT)
+
+
+## Step 5: mod overlay — add a new hull, override a core hull by id (keeping its
+## slot), drop a hull whose mount dangles, and load deterministically.
+func _test_catalog_mods() -> void:
+	_purge_dir(TEST_MOD_ROOT)
+	var core_ship_ids := ShipLibrary.ship_ids()
+	var core_ship_count := core_ship_ids.size()
+
+	# ADD: a new hull cloned from the scout under a fresh id.
+	var newship := ShipLibrary.ship(&"helium_scout").to_dict()
+	newship["id"] = "test_corsair"
+	newship["display_name"] = "Test Corsair"
+	_write_json(TEST_MOD_ROOT + "/a_add/ships.json", { "ships": [newship] })
+
+	# OVERRIDE: a full battleship def with CREW retuned up.
+	var over := ShipLibrary.ship(&"helium_battleship").to_dict()
+	over["systems"]["CREW"] = 999
+	_write_json(TEST_MOD_ROOT + "/b_override/ships.json", { "ships": [over] })
+
+	var cat := ShipCatalog.new(TEST_MOD_ROOT + "/")
+	# Add lands after core, is fieldable, and gets a derived cost.
+	_check(cat.has_ship(&"test_corsair"), "mod-added ship is present")
+	_check_eq(cat.ship_ids().size(), core_ship_count + 1, "mod adds exactly one ship")
+	_check_eq(cat.ship_ids()[cat.ship_ids().size() - 1], &"test_corsair",
+			"mod-added ship sorts after the core hulls")
+	_check(cat.ship(&"test_corsair").point_cost() >= 1, "mod-added ship gets a derived point_cost")
+	# Override reflects the new value and keeps the battleship's original slot.
+	_check_eq(cat.ship(&"helium_battleship").system_count(ShipDef.SystemType.CREW), 999,
+			"mod override retunes the battleship's CREW")
+	var core_bs_index := core_ship_ids.find(&"helium_battleship")
+	_check_eq(cat.ship_ids().find(&"helium_battleship"), core_bs_index,
+			"overridden hull keeps its original ordering slot")
+
+	# DANGLING MOUNT: a hull mounting a gun no layer provides is dropped.
+	var dangler := ShipLibrary.ship(&"helium_scout").to_dict()
+	dangler["id"] = "test_ghost"
+	dangler["gun_mounts"] = [{ "gun_id": "no_such_gun", "arcs": [0], "label": "Phantom" }]
+	_write_json(TEST_MOD_ROOT + "/c_dangle/ships.json", { "ships": [dangler] })
+	var cat2 := ShipCatalog.new(TEST_MOD_ROOT + "/")
+	_check(not cat2.has_ship(&"test_ghost"), "hull with a dangling gun mount is dropped")
+
+	# DETERMINISM: same dir, same order, twice.
+	var a := ShipCatalog.new(TEST_MOD_ROOT + "/").ship_ids()
+	var b := ShipCatalog.new(TEST_MOD_ROOT + "/").ship_ids()
+	var same := a.size() == b.size()
+	for i in a.size():
+		if a[i] != b[i]:
+			same = false
+	_check(same, "two loads of the same mod set yield identical ship order")
+	_purge_dir(TEST_MOD_ROOT)
+
+
+## Step 5 (save hardening): a save naming a ship the active catalog no longer
+## provides (a removed mod) declines cleanly — no half-built engine — and reports
+## why. Restores the default catalog afterward so later tests see core data.
+func _test_save_missing_dependency() -> void:
+	var engine := TurnEngine.new()
+	engine.setup_fleet([
+		{ "ship_id": &"helium_scout", "side": 0, "hex": Vector2i(18, 12), "facing": 1 },
+		{ "ship_id": &"zodanga_cruiser", "side": 1, "hex": Vector2i(30, 8), "facing": 4 },
+	], 17)
+	var text := SaveGame.serialize(engine)
+
+	# Swap in a catalog with NO mods... that still has both core ships, so a normal
+	# reload works and load_error clears.
+	SaveGame.load_error = "stale"
+	var ok := SaveGame.deserialize(text)
+	_check(ok != null, "a save reloads while its ships exist")
+	_check_eq(SaveGame.load_error, "", "load_error clears on a successful load")
+
+	# Now inject a catalog missing the cruiser: the save must decline with a reason.
+	# Build a fresh core catalog and erase one ship from it.
+	var partial := ShipCatalog.new("user://__none__/")
+	partial._ships.erase(&"zodanga_cruiser")
+	ShipLibrary.use_catalog(partial)
+
+	var declined := SaveGame.deserialize(text)
+	_check(declined == null, "a save naming an absent ship class declines (no partial engine)")
+	_check(SaveGame.load_error.find("zodanga_cruiser") != -1,
+			"load_error names the missing ship class")
+
+	ShipLibrary.reset_default()
+	# Sanity: the facade is healthy again for the remaining tests.
+	_check_eq(ShipLibrary.ship(&"zodanga_cruiser").id, &"zodanga_cruiser",
+			"default catalog restored after the missing-dependency test")
 
 
 func _test_deployment_rules() -> void:
@@ -1407,7 +1705,7 @@ func _scaled_hull(m: int) -> ShipDef:
 		ShipDef.SystemType.DAMAGE_CONTROL: 1 * m,
 	}
 	d.base_max_speed = 4 * m
-	d.speed_per_engine_crew = 2
+	d.engine_crew_per_speed = 2
 	d.turn_mode_by_speed.assign([2, 2, 2, 2])
 	return d
 
@@ -1565,13 +1863,16 @@ func _test_save_roundtrip() -> void:
 	scout.fires = 2
 	scout.steering_jammed = 1
 	scout.pop_officer()
-	scout.gun_states[4]["ammo"] = 1            # torpedo tube part-spent
+	scout.gun_states[1]["ammo"] = 1            # torpedo tube (mount 1) part-spent
 	scout.gun_states[0]["reload"] = 2
 	scout.port_buoyancy = 3
 	scout.stbd_buoyancy = 5
-	scout.apply_allocation({ "guns": [0, 4], "engine": 2, "damage_control": 1, "lookout": 0 })
+	# Scout is a free-engine, no-DC flyer: man its turret + tube (engine/DC take no crew).
+	scout.apply_allocation({ "guns": [0, 1], "engine": 0, "damage_control": 0, "lookout": 0 })
 	cruiser.is_destroyed = false
 	cruiser.speed = 4
+	# The cruiser carries the non-zero engine allocation (its engine is crew-gated).
+	cruiser.apply_allocation({ "guns": [0], "engine": 30, "damage_control": 1, "lookout": 0 })
 	# Open movement so current_impulse and the movement queue are non-empty.
 	engine.begin_movement()
 	engine.next_mover()
@@ -1594,11 +1895,12 @@ func _test_save_roundtrip() -> void:
 	_check_eq(ls.fires, 2, "fire count round-trips")
 	_check_eq(ls.steering_jammed, 1, "steering jam round-trips")
 	_check_eq(ls.officers.size(), scout.officers.size(), "struck officer roster round-trips")
-	_check_eq(int(ls.gun_states[4]["ammo"]), 1, "torpedo ammo round-trips")
+	_check_eq(int(ls.gun_states[1]["ammo"]), 1, "torpedo ammo round-trips")
 	_check_eq(int(ls.gun_states[0]["reload"]), 2, "gun reload counter round-trips")
 	_check_eq(ls.port_buoyancy, 3, "port buoyancy round-trips")
 	_check_eq(ls.stbd_buoyancy, 5, "stbd buoyancy round-trips")
-	_check_eq(int(ls.allocation.get("engine", -1)), 2, "allocation round-trips")
+	_check_eq(int(loaded.ships[1].allocation.get("engine", -1)), 30,
+			"engine allocation round-trips (cruiser)")
 	_check_eq(ls.gun_states[0]["manned"], true, "manned flag (from allocation) round-trips")
 	# Typed-array element types survive the round-trip (convention #1).
 	_check(ls.armor_remaining.get_typed_builtin() == TYPE_INT, "armor_remaining stays Array[int]")
@@ -1922,9 +2224,9 @@ func _test_officer_casualties() -> void:
 func _test_damage_control_capacity() -> void:
 	# A destroyed station can't be manned: damage-control crew is gated by the
 	# surviving DAMAGE_CONTROL boxes, not just the crew pool.
-	var s := ShipState.create(ShipLibrary.ship(&"helium_scout"), 0, Vector2i(0, 0), 0)
+	var s := ShipState.create(ShipLibrary.ship(&"zodanga_cruiser"), 0, Vector2i(0, 0), 0)
 	var cap := s.damage_control_capacity()
-	_check(cap >= 1, "intact scout has damage-control capacity")
+	_check(cap >= 1, "intact cruiser has damage-control capacity")
 
 	# With one DC station, asking for more parties than stations is capped down.
 	_check(s.apply_allocation({ "guns": [], "engine": 0, "damage_control": cap + 1, "lookout": 0 }),
@@ -1944,7 +2246,7 @@ func _test_damage_control_capacity() -> void:
 	# DC station is gone, even with a DC hand nominally allocated.
 	var engine := TurnEngine.new()
 	engine.setup(1)
-	var sc := engine.ships[0]
+	var sc := engine.ships[1]   # cruiser (DC-capable; the scout has no DC now)
 	sc.systems_remaining[ShipDef.SystemType.DAMAGE_CONTROL] = 0
 	var buoy_total := sc.def.system_count(ShipDef.SystemType.BUOYANCY)
 	sc.systems_remaining[ShipDef.SystemType.BUOYANCY] = buoy_total - 1   # one tank holed

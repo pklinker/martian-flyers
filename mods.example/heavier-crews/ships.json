@@ -1,0 +1,97 @@
+{
+  "ships": [
+    {
+      "armor": [
+        7,
+        6,
+        6,
+        5,
+        6,
+        6
+      ],
+      "base_max_speed": 4,
+      "display_name": "Helium Battleship",
+      "engine_crew_per_speed": 55,
+      "faction": "Helium",
+      "grounding_threshold": 5,
+      "gun_mounts": [
+        {
+          "arcs": [
+            5,
+            0,
+            1
+          ],
+          "gun_id": "heavy_gun",
+          "label": "Bow Battery"
+        },
+        {
+          "arcs": [
+            1,
+            2
+          ],
+          "gun_id": "heavy_gun",
+          "label": "Fwd Starboard Battery"
+        },
+        {
+          "arcs": [
+            1,
+            2
+          ],
+          "gun_id": "heavy_gun",
+          "label": "Aft Starboard Battery"
+        },
+        {
+          "arcs": [
+            4,
+            5
+          ],
+          "gun_id": "heavy_gun",
+          "label": "Fwd Port Battery"
+        },
+        {
+          "arcs": [
+            4,
+            5
+          ],
+          "gun_id": "heavy_gun",
+          "label": "Aft Port Battery"
+        },
+        {
+          "arcs": [
+            2,
+            3,
+            4
+          ],
+          "gun_id": "medium_gun",
+          "label": "Stern Gun"
+        }
+      ],
+      "id": "helium_battleship",
+      "officers": [
+        "Odwar Hor Vastus",
+        "Dwar Djor Kantos",
+        "Padwar Vad Varo",
+        "Padwar Tan Hadron"
+      ],
+      "point_cost_override": -1,
+      "systems": {
+        "BRIDGE": 3,
+        "BUOYANCY": 20,
+        "CREW": 360,
+        "DAMAGE_CONTROL": 3,
+        "ENGINE": 8,
+        "MAGAZINE": 3,
+        "PROPELLER": 5,
+        "RUDDER": 4
+      },
+      "turn_mode_by_speed": [
+        1,
+        2,
+        2,
+        3,
+        4,
+        5
+      ]
+    }
+  ]
+}

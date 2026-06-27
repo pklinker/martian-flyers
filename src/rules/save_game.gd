@@ -19,6 +19,11 @@ extends RefCounted
 ## Bump when the serialized shape changes incompatibly; load rejects unknown.
 const SAVE_VERSION := 1
 
+## Reason the last load returned null (unrecognised version, or a ship/gun the
+## current catalog no longer provides — a removed mod). The UI surfaces it so the
+## player learns "this save needs mod X" instead of a silent "no save".
+static var load_error := ""
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -108,7 +113,18 @@ static func engine_to_dict(engine: TurnEngine) -> Dictionary:
 
 
 static func dict_to_engine(data: Dictionary) -> TurnEngine:
+	load_error = ""
 	if int(data.get("version", 0)) != SAVE_VERSION:
+		load_error = "save version %s is not supported (expected %d)" % [data.get("version", "?"), SAVE_VERSION]
+		return null
+	# Resolve every ship — and every gun its hull mounts — against the active
+	# catalog BEFORE building anything, so a save that names a removed mod's ship
+	# or gun declines cleanly instead of half-building an engine then crashing
+	# mid-battle on first access.
+	var miss := _missing_dependency(data)
+	if miss != "":
+		load_error = miss
+		push_warning("SaveGame: " + miss)
 		return null
 	var engine := TurnEngine.new()
 	engine.turn_number = int(data.get("turn_number", 1))
@@ -143,6 +159,21 @@ static func dict_to_engine(data: Dictionary) -> TurnEngine:
 	engine._movement_queue = mq
 
 	return engine
+
+
+## Returns "" if every ship in the save (and every gun its def mounts) is known
+## to the active catalog; otherwise a message naming the first missing id. Checks
+## the gun level too: a hull can survive a mod removal that took only its gun.
+static func _missing_dependency(data: Dictionary) -> String:
+	for sd in data.get("ships", []):
+		var did := StringName(sd["def_id"])
+		if not ShipLibrary.has_ship(did):
+			return "this save needs ship class '%s' (a removed mod?)" % did
+		for m in ShipLibrary.ship(did).gun_mounts:
+			var gid := StringName(m["gun_id"])
+			if not ShipLibrary.has_gun(gid):
+				return "this save's '%s' mounts unknown gun '%s' (a removed mod?)" % [did, gid]
+	return ""
 
 
 # ---------------------------------------------------------------------------

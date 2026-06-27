@@ -1,0 +1,306 @@
+{
+	"ships": [
+		{
+			"acceleration": 4,
+			"armor": [
+				3,
+				2,
+				1,
+				1,
+				1,
+				2
+			],
+			"base_max_speed": 12,
+			"display_name": "Helium Scout Flyer",
+			"engine_crew_per_speed": 0,
+			"faction": "Helium",
+			"grounding_threshold": 1,
+			"gun_mounts": [
+				{
+					"arcs": [
+						0,
+						1,
+						2,
+						3,
+						4,
+						5
+					],
+					"gun_id": "twin_turret",
+					"label": "Turret"
+				},
+				{
+					"ammo": 3,
+					"arcs": [
+						5,
+						0,
+						1
+					],
+					"gun_id": "aerial_torpedo",
+					"label": "Torpedo Tube"
+				}
+			],
+			"id": "helium_scout",
+			"officers": [
+				"Dwar Kantos Kan",
+				"Padwar Tan Gama"
+			],
+			"point_cost_override": -1,
+			"systems": {
+				"BRIDGE": 1,
+				"BUOYANCY": 8,
+				"CREW": 6,
+				"DAMAGE_CONTROL": 0,
+				"ENGINE": 4,
+				"MAGAZINE": 1,
+				"PROPELLER": 3,
+				"RUDDER": 2
+			},
+			"turn_mode_by_speed": [
+				1,
+				1,
+				1,
+				1,
+				2,
+				2,
+				2,
+				3,
+				3
+			]
+		},
+		{
+			"acceleration": 2,
+			"armor": [
+				5,
+				4,
+				4,
+				3,
+				4,
+				4
+			],
+			"base_max_speed": 6,
+			"display_name": "Zodangan Patrol Cruiser",
+			"engine_crew_per_speed": 15,
+			"faction": "Zodanga",
+			"grounding_threshold": 3,
+			"gun_mounts": [
+				{
+					"arcs": [
+						5,
+						0,
+						1
+					],
+					"gun_id": "medium_gun",
+					"label": "Bow Gun"
+				},
+				{
+					"arcs": [
+						1,
+						2
+					],
+					"gun_id": "heavy_gun",
+					"label": "Starboard Battery"
+				},
+				{
+					"arcs": [
+						4,
+						5
+					],
+					"gun_id": "heavy_gun",
+					"label": "Port Battery"
+				},
+				{
+					"arcs": [
+						2,
+						3,
+						4
+					],
+					"gun_id": "medium_gun",
+					"label": "Stern Gun"
+				}
+			],
+			"id": "zodanga_cruiser",
+			"officers": [
+				"Dwar Bal Tut",
+				"Padwar Sang Tal",
+				"Padwar Vor Daj"
+			],
+			"point_cost_override": -1,
+			"systems": {
+				"BRIDGE": 2,
+				"BUOYANCY": 14,
+				"CREW": 120,
+				"DAMAGE_CONTROL": 2,
+				"ENGINE": 6,
+				"MAGAZINE": 2,
+				"PROPELLER": 4,
+				"RUDDER": 3
+			},
+			"turn_mode_by_speed": [
+				1,
+				1,
+				2,
+				2,
+				3,
+				4
+			]
+		},
+		{
+			"acceleration": 6,
+			"armor": [
+				1,
+				1,
+				1,
+				1,
+				1,
+				1
+			],
+			"base_max_speed": 16,
+			"display_name": "One-Man Flyer",
+			"engine_crew_per_speed": 0,
+			"faction": "Helium",
+			"grounding_threshold": 0,
+			"gun_mounts": [
+				{
+					"arcs": [
+						5,
+						0,
+						1
+					],
+					"gun_id": "light_gun",
+					"label": "Bow Gun"
+				},
+				{
+					"ammo": 1,
+					"arcs": [
+						5,
+						0,
+						1
+					],
+					"gun_id": "aerial_torpedo",
+					"label": "Torpedo Tube"
+				}
+			],
+			"id": "one_man_flyer",
+			"officers": [
+				"Padwar Kor Tan"
+			],
+			"point_cost_override": -1,
+			"systems": {
+				"BRIDGE": 1,
+				"BUOYANCY": 4,
+				"CREW": 1,
+				"DAMAGE_CONTROL": 0,
+				"ENGINE": 3,
+				"MAGAZINE": 1,
+				"PROPELLER": 3,
+				"RUDDER": 2
+			},
+			"turn_mode_by_speed": [
+				1,
+				1,
+				1,
+				1,
+				1,
+				2,
+				2,
+				2,
+				2,
+				3
+			]
+		},
+		{
+			"acceleration": 2,
+			"armor": [
+				7,
+				6,
+				6,
+				5,
+				6,
+				6
+			],
+			"base_max_speed": 4,
+			"display_name": "Helium Battleship",
+			"engine_crew_per_speed": 55,
+			"faction": "Helium",
+			"grounding_threshold": 5,
+			"gun_mounts": [
+				{
+					"arcs": [
+						5,
+						0,
+						1
+					],
+					"gun_id": "heavy_gun",
+					"label": "Bow Battery"
+				},
+				{
+					"arcs": [
+						1,
+						2
+					],
+					"gun_id": "heavy_gun",
+					"label": "Fwd Starboard Battery"
+				},
+				{
+					"arcs": [
+						1,
+						2
+					],
+					"gun_id": "heavy_gun",
+					"label": "Aft Starboard Battery"
+				},
+				{
+					"arcs": [
+						4,
+						5
+					],
+					"gun_id": "heavy_gun",
+					"label": "Fwd Port Battery"
+				},
+				{
+					"arcs": [
+						4,
+						5
+					],
+					"gun_id": "heavy_gun",
+					"label": "Aft Port Battery"
+				},
+				{
+					"arcs": [
+						2,
+						3,
+						4
+					],
+					"gun_id": "medium_gun",
+					"label": "Stern Gun"
+				}
+			],
+			"id": "helium_battleship",
+			"officers": [
+				"Odwar Hor Vastus",
+				"Dwar Djor Kantos",
+				"Padwar Vad Varo",
+				"Padwar Tan Hadron"
+			],
+			"point_cost_override": -1,
+			"systems": {
+				"BRIDGE": 3,
+				"BUOYANCY": 20,
+				"CREW": 240,
+				"DAMAGE_CONTROL": 3,
+				"ENGINE": 8,
+				"MAGAZINE": 3,
+				"PROPELLER": 5,
+				"RUDDER": 4
+			},
+			"turn_mode_by_speed": [
+				1,
+				2,
+				2,
+				3,
+				4,
+				5
+			]
+		}
+	]
+}
