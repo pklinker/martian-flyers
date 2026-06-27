@@ -136,8 +136,11 @@ func _build_ui() -> void:
 	ssd_toggle_btn = _add_button(row1, "Hide Ships", _toggle_ssd, "system")
 	_add_button(row1, "Recenter", _on_recenter, "system")
 	view_toggle_btn = _add_button(row1, "View: Top-Down", _on_toggle_view, "system")
+	view_toggle_btn.tooltip_text = "Switch between top-down and isometric views"
 	rotate_l_btn = _add_button(row1, "↶", _on_rotate_field.bind(-1), "system")
 	rotate_r_btn = _add_button(row1, "↷", _on_rotate_field.bind(1), "system")
+	rotate_l_btn.tooltip_text = "Rotate the field left — or right-drag the map to spin it freely"
+	rotate_r_btn.tooltip_text = "Rotate the field right — or right-drag the map to spin it freely"
 	_add_button(row1, "Save", _on_save, "system")
 	_add_button(row1, "Load", _on_load, "system")
 	_add_button(row1, "New Game", _new_game, "warn")
@@ -296,23 +299,20 @@ func _on_recenter() -> void:
 
 
 ## Toggle the tactical map between top-down and isometric. The map animates the
-## transition itself; we just relabel the button and gate the rotate controls.
+## transition itself; we just relabel the button.
 func _on_toggle_view() -> void:
 	map.toggle_view()
 	_sync_view_buttons()
 
-## Rotate the isometric field by one snapped step (counter-/clockwise). No-op in
-## top-down, where the controls are disabled.
+## Rotate the field by one snapped step (counter-/clockwise). Works in both views.
 func _on_rotate_field(step: int) -> void:
 	map.rotate_field(step)
 
-## Reflect the map's current view mode in the toolbar: the toggle label and whether
-## the rotate buttons are live (rotation only applies in isometric).
+## Reflect the map's current view mode in the toolbar toggle label. Rotation works in
+## both views, so the rotate buttons stay live throughout.
 func _sync_view_buttons() -> void:
 	var iso: bool = map.view_mode == HexMapView.ViewMode.ISOMETRIC
 	view_toggle_btn.text = "View: Isometric" if iso else "View: Top-Down"
-	rotate_l_btn.disabled = not iso
-	rotate_r_btn.disabled = not iso
 
 
 ## Centered modal shown when the game ends; hidden at new-game start.

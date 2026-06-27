@@ -103,6 +103,9 @@ var _target_height := 0.0
 
 const MAX_HEX := 64.0                  # manual zoom-in ceiling
 const PAN_THRESHOLD := 6.0             # px of drag before a click becomes a pan
+const ROT_DRAG_SPEED := 0.01           # radians of field spin per px of right-drag
+
+var _rotating := false                  # right button held: free-spinning the field
 
 ## Transient combat effects: short-lived tracers (firer->target streaks) and
 ## flashes (bursts at a hex). Pure presentation — they animate on _process and
@@ -342,25 +345,40 @@ func set_view_mode(mode: int) -> void:
 	if view_mode == ViewMode.ISOMETRIC:
 		_target_tilt = ISO_TILT
 		_target_height = ISO_HEIGHT
-		_target_theta = _orientation * (TAU / 6.0)
 	else:
-		# Overhead is always flat and north-up; rotation only lives in isometric.
+		# Overhead is flat (no tilt/height) but keeps its rotation — orientation
+		# persists across a view toggle so the field doesn't snap back to north-up.
 		_target_tilt = 1.0
 		_target_height = 0.0
-		_target_theta = 0.0
+	_target_theta = _orientation * (TAU / 6.0)
 	set_process(true)
 	view_mode_changed.emit(view_mode)
 
 func toggle_view() -> void:
 	set_view_mode(ViewMode.OVERHEAD if view_mode == ViewMode.ISOMETRIC else ViewMode.ISOMETRIC)
 
-## Snap the isometric field by one hex-facing step (±1 of 6). No-op in overhead,
-## which stays north-up. The transform tweens to the new angle on _process.
+## Snap the field by one hex-facing step (±1 of 6). Works in both views; the transform
+## tweens to the new angle on _process.
 func rotate_field(step: int) -> void:
-	if view_mode != ViewMode.ISOMETRIC:
-		return
 	_orientation = posmod(_orientation + step, 6)
 	_target_theta = _orientation * (TAU / 6.0)
+	set_process(true)
+
+## Free-spin the field by a right-drag's horizontal delta. Drives _theta directly and
+## pins the tween target to it so the in-flight settle doesn't fight the drag; the
+## actual snap-to-orientation happens on release via _snap_orientation().
+func rotate_drag(dx: float) -> void:
+	_theta += dx * ROT_DRAG_SPEED
+	_target_theta = _theta
+	_clamp_camera()
+	queue_redraw()
+
+## Settle a free rotation onto the nearest of the six hex orientations, animated.
+func _snap_orientation() -> void:
+	var step := TAU / 6.0
+	_theta = wrapf(_theta, 0.0, TAU)
+	_orientation = posmod(int(round(_theta / step)), 6)
+	_target_theta = _orientation * step
 	set_process(true)
 
 ## Step the view transform toward its targets. Returns true while still moving, so
@@ -451,6 +469,14 @@ func _gui_input(event: InputEvent) -> void:
 					_panning = false
 				elif not _panning:
 					_click(event.position)   # a click, not a drag-pan
+			MOUSE_BUTTON_RIGHT:
+				# Hold the right button and drag to spin the field (either view); settle
+				# to the nearest hex orientation on release.
+				if event.pressed:
+					_rotating = true
+				elif _rotating:
+					_rotating = false
+					_snap_orientation()
 			MOUSE_BUTTON_WHEEL_UP:
 				if event.pressed:
 					zoom_by(1.1)
@@ -458,8 +484,10 @@ func _gui_input(event: InputEvent) -> void:
 				if event.pressed:
 					zoom_by(1.0 / 1.1)
 	elif event is InputEventMouseMotion:
-		# Left-drag pans once it passes the click/drag threshold.
-		if event.button_mask & MOUSE_BUTTON_MASK_LEFT:
+		# Right-drag spins the field (either view); left-drag pans past the threshold.
+		if _rotating and (event.button_mask & MOUSE_BUTTON_MASK_RIGHT):
+			rotate_drag(event.relative.x)
+		elif event.button_mask & MOUSE_BUTTON_MASK_LEFT:
 			if not _panning and event.position.distance_to(_press_pos) > PAN_THRESHOLD:
 				_panning = true
 			if _panning:

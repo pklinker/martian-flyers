@@ -148,6 +148,16 @@ func _test_view_projection() -> void:
 	_check(overhead_ok, "overhead projection matches the legacy flat formula")
 	_check(overhead_rt, "overhead ground picking round-trips")
 
+	# Rotated overhead (flat, no tilt/height) — rotation is allowed in top-down too,
+	# so picking must round-trip at every orientation there as well.
+	for o in 6:
+		view._theta = o * (TAU / 6.0)
+		var rt_flat := true
+		for h in hexes:
+			if view.pixel_to_hex(view.hex_to_pixel(h)) != h:
+				rt_flat = false
+		_check(rt_flat, "rotated overhead ground picking round-trips at orientation %d" % o)
+
 	# Isometric at each of the six snapped orientations: ground picking still round-trips.
 	view._tilt = HexMapView.ISO_TILT
 	view._height_scale = HexMapView.ISO_HEIGHT
