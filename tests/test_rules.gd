@@ -107,6 +107,9 @@ func _init() -> void:
 	_test_save_rng_determinism()
 	_test_save_file_and_rejects()
 
+	_suite("View projection")
+	_test_view_projection()
+
 	_suite("Smoke battle")
 	_test_full_battle()
 
@@ -114,6 +117,58 @@ func _init() -> void:
 	print("  %d passed, %d failed" % [_passed, _failed])
 	print("========================================")
 	quit(1 if _failed > 0 else 0)
+
+
+# ---------------------------------------------------------------------------
+# View projection (HexMapView overhead ⇄ isometric transform)
+# ---------------------------------------------------------------------------
+
+## The map's pixel<->hex transform must be invertible on the ground plane in every
+## view it offers: flat overhead (where it must also match the original flat formula
+## exactly) and isometric at all six snapped field orientations. Picking depends on it.
+func _test_view_projection() -> void:
+	var view := HexMapView.new()
+	view.hex_size = 34.0
+	view._origin = Vector2(640.0, 400.0)
+	var hexes: Array[Vector2i] = [Vector2i(0, 0), Vector2i(3, -1), Vector2i(10, 4),
+			Vector2i(23, 11), Vector2i(5, -3), Vector2i(18, 2)]
+
+	# Overhead: numerically identical to the legacy flat hex_to_pixel, and round-trips.
+	view._theta = 0.0
+	view._tilt = 1.0
+	view._height_scale = 0.0
+	var overhead_ok := true
+	var overhead_rt := true
+	for h in hexes:
+		var legacy := view._origin + HexMath.to_cartesian(h) * view.hex_size
+		if view.hex_to_pixel(h).distance_to(legacy) > 0.001:
+			overhead_ok = false
+		if view.pixel_to_hex(view.hex_to_pixel(h)) != h:
+			overhead_rt = false
+	_check(overhead_ok, "overhead projection matches the legacy flat formula")
+	_check(overhead_rt, "overhead ground picking round-trips")
+
+	# Rotated overhead (flat, no tilt/height) — rotation is allowed in top-down too,
+	# so picking must round-trip at every orientation there as well.
+	for o in 6:
+		view._theta = o * (TAU / 6.0)
+		var rt_flat := true
+		for h in hexes:
+			if view.pixel_to_hex(view.hex_to_pixel(h)) != h:
+				rt_flat = false
+		_check(rt_flat, "rotated overhead ground picking round-trips at orientation %d" % o)
+
+	# Isometric at each of the six snapped orientations: ground picking still round-trips.
+	view._tilt = HexMapView.ISO_TILT
+	view._height_scale = HexMapView.ISO_HEIGHT
+	for o in 6:
+		view._theta = o * (TAU / 6.0)
+		var rt := true
+		for h in hexes:
+			if view.pixel_to_hex(view.hex_to_pixel(h)) != h:
+				rt = false
+		_check(rt, "isometric ground picking round-trips at orientation %d" % o)
+	view.free()
 
 
 # ---------------------------------------------------------------------------
