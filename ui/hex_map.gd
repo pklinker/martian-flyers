@@ -95,6 +95,13 @@ var _anim_t := 0.0                     # free-running clock for idle bob / drift
 const CLOUD_HEIGHT := 3.2
 var _clouds: Array[Dictionary] = []
 
+## Authored 3D terrain models (hills/towers). When a matching .glb is present its baked
+## sprite replaces the procedural prism; otherwise this is dormant. See terrain_models.gd.
+## MODEL_GROUND_ANCHOR is the fraction down the sprite where the hex centre sits (the
+## model's base) — tune against a real model once one is dropped in.
+const MODEL_GROUND_ANCHOR := 0.62
+var _terrain_models: TerrainModels
+
 var view_mode := ViewMode.OVERHEAD
 var _orientation := 0                  # snapped field facing 0..5 (isometric only)
 var _target_theta := 0.0
@@ -222,6 +229,11 @@ func _ready() -> void:
 	clip_contents = true                  # keep the scrolling field inside the map rect
 	resized.connect(_on_resized)
 	set_process(false)                    # only tick while effects are alive
+	# Offscreen baker for authored 3D terrain models. Adds no 3D nodes and no cost
+	# until a model is present in assets/terrain/; otherwise terrain stays prisms.
+	_terrain_models = TerrainModels.new()
+	add_child(_terrain_models)
+	_terrain_models.baked.connect(queue_redraw)
 
 
 ## A larger view can outrun the previous clamp, exposing void at an edge — re-pin
@@ -627,7 +639,7 @@ func _draw() -> void:
 	objs.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return a["depth"] < b["depth"])
 	for o in objs:
 		match o["kind"]:
-			"terrain": _draw_terrain_prism(font, o["hex"], o["type"])
+			"terrain": _draw_terrain_model(font, o["hex"], o["type"])
 			"dust": _draw_dust(o["hex"])
 			"ship": _draw_ship(font, o["ship"])
 
@@ -750,6 +762,44 @@ static func _facing_dir_deg(deg: float) -> Vector2:
 ## narrow column standing on the tile.
 func _terrain_radius(t: int) -> float:
 	return 0.42 if t == TerrainDef.Type.TOWER else 1.0
+
+
+## Deterministic model variant for a hex, so a given hill always looks the same.
+func _terrain_variant(hex: Vector2i, t: int) -> int:
+	var n := _terrain_models.variant_count(t)
+	return posmod(hex.x * 7 + hex.y * 13, n) if n > 0 else 0
+
+## Draw a terrain feature using its authored 3D model when one exists, else the prism.
+## The baked sprite is blitted at the hex with a soft ground shadow; if the needed angle
+## isn't baked yet we request it and draw the prism this frame (it pops in on `baked`).
+func _draw_terrain_model(font: Font, hex: Vector2i, t: int) -> void:
+	if _terrain_models == null or not _terrain_models.has_model(t):
+		_draw_terrain_prism(font, hex, t)
+		return
+	var view := TerrainModels.View.ISO if _height_scale > 0.02 else TerrainModels.View.TOPDOWN
+	var variant := _terrain_variant(hex, t)
+	var bucket := _terrain_models.angle_bucket(_theta)
+	var tex := _terrain_models.get_texture(t, variant, bucket, view)
+	if tex == null:
+		_terrain_models.request(t, variant, bucket, view)
+		_draw_terrain_prism(font, hex, t)            # fallback until the bake lands
+		return
+
+	var base := HexMath.to_cartesian(hex)
+	var ground := project(base, 0.0)
+	# Soft ground shadow, offset along the sun and fading in with the tilt (as the prism).
+	var sh_k := clampf(_height_scale / ISO_HEIGHT, 0.0, 1.0)
+	if sh_k > 0.01:
+		var shoff := SUN_SCREEN * TerrainDef.render_height(t) * hex_size * 0.5
+		var shp := PackedVector2Array()
+		for i in 6:
+			var a := deg_to_rad(60.0 * i)
+			shp.append(project(base + Vector2(cos(a), sin(a)) * _terrain_radius(t), 0.0) + shoff)
+		draw_colored_polygon(shp, Color(0.05, 0.04, 0.03, 0.20 * sh_k))
+	# The sprite spans MODEL_FRAME_UNITS hex-units; on the map a hex-unit is hex_size px.
+	var w := TerrainModels.MODEL_FRAME_UNITS * hex_size
+	var rect := Rect2(ground - Vector2(w * 0.5, w * MODEL_GROUND_ANCHOR), Vector2(w, w))
+	draw_texture_rect(tex, rect, false)
 
 
 ## Draw a terrain feature as an extruded prism: a cast ground shadow, the visible side

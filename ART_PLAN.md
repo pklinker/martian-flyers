@@ -31,7 +31,8 @@ keys off a texture; the engine never knows assets exist.
 > that file (`ISO_TILT`, `ISO_HEIGHT`, `SHIP_ALT`, `SUN_SCREEN`) and the per-feature
 > heights in [`terrain_def.gd`](src/rules/terrain_def.gd) `render_height()`. When
 > authoring assets, treat §1 as the contract for **top-down**; isometric massing is
-> generated procedurally, not from textures.
+> generated procedurally by default — but **§4b** lets you swap in authored **3D
+> terrain models** (glTF) that take over from the procedural prisms when present.
 
 ## 1. Art direction
 
@@ -67,7 +68,7 @@ Style guidance:
 ```
 assets/
   ships/        top-down map tokens + SSD profile silhouettes
-  terrain/      hex tiles and overlays
+  terrain/      hex tiles and overlays (+ .glb 3D terrain models, §4b)
   map/          ground textures, compass rose, edge dressing
   ui/           panels, buttons, banners, icons, title art
   fonts/        .ttf/.otf files
@@ -145,6 +146,73 @@ now so tiles are ready the day the rules land. GDD terrain set: **hills**
 | `tower_1.png`, `tower_2.png` | ruined Orovar towers | broken white-marble spires, long shadow optional |
 | `dust_storm_1.png` … `dust_storm_3.png` | dust storm | ~50–60% opacity swirl, warm grey-orange; semi-transparent so ships ghost through; 3 variants can double as animation frames |
 | `sea_bottom_1.png` … `sea_bottom_4.png` | plain ground variation | *subtle*: faint moss-yellow mottling, dry cracks, an old keel-scar — barely-there texture to break the flat ochre; must tile against `#DECCA8` without visible seams |
+
+## 4b. 3D terrain models (isometric view) — *AI-generation contract*
+
+The isometric view draws hills and towers as procedural extruded prisms
+(`hex_map.gd _draw_terrain_prism`). Authored **3D models** replace that massing
+with real mountains and ruined towers. These are **glTF meshes rendered live**:
+a small offscreen `SubViewport` + `Camera3D` bakes each model to a sprite at the
+current view angle (cached per ~15° of field rotation), which the depth-sorted
+draw pass blits onto the hex. The **prism stays the fallback** — drop a model in
+and it takes over for that terrain type; with no model, nothing changes.
+
+This section is the contract to hand an **AI 3D generator** (Meshy, Tripo, etc.):
+give it the prose seed *plus* every constraint below — text-to-3D tools ignore
+scale/orientation unless told, so the technical block is not optional.
+
+**File & engine:**
+- Format: **glTF 2.0 binary `.glb`** — one self-contained file, **textures
+  embedded**. Godot 4.6 imports it natively.
+- Mesh + material **only**: no animation, no rig/skeleton, no cameras or lights
+  inside the file. **Apply all transforms** (no leftover object-level scale/rot).
+
+**Axes, anchor, orientation:**
+- **Y-up**, `+Y` is up (glTF convention; Godot keeps it).
+- Centered on **X/Z at the origin**; the **base sits exactly on `Y = 0`** and the
+  model rises into `+Y`, so it stands on the ground plane with no gap or sink.
+- `+Z` faces **north** (matches facing 0). Hills/towers are near-radial so this is
+  mostly cosmetic, but keep it consistent.
+
+**Scale — define the unit (critical):** **1 unit = one hex circumradius.** The
+engine rescales the bake to the on-screen `hex_size`, so *proportions* matter most;
+author to these bounding boxes so a hill fills its hex and a tower is a slender
+spire (heights match `TerrainDef.render_height`: hill 0.55, tower 1.5):
+
+| Type | Footprint (X×Z) | Height (Y) | Read |
+|---|---|---|---|
+| Hill | ≈ 1.8 × 1.8 units | ≈ 0.55 units | broad, low, rounded/flat-topped mesa |
+| Tower | ≈ 0.8 × 0.8 units | ≈ 1.5 units | slender, crumbling ruined spire |
+
+**Topology & materials:**
+- **Low-poly: ≤ ~3k triangles.** It renders ≤ 256 px; silhouette beats detail.
+  Clean, manifold, no interior faces.
+- PBR metallic-roughness, **metalness 0, roughness ~0.9** — fully matte, no gloss,
+  **no emission**. Baked ambient occlusion is welcome. Albedo texture ≤ 512 px, or
+  vertex colors.
+- Palette to sit on the ochre map (see §1): **hill** sun-bleached ochre-brown
+  ≈ `#80592A`; **tower** weathered off-white limestone/marble ≈ `#9A948A`.
+
+**Style:** stylized, illustrated, lightly faceted low-poly — pulp cartography,
+**not photoreal**. No high-frequency noise/grime; it must read as a hand-built
+diorama piece, consistent with §1's engraved-line look.
+
+**Variants & naming:** 2–3 per type to kill repetition. Files go in
+`assets/terrain/` as `hill_1.glb`, `hill_2.glb`, `hill_3.glb`, `tower_1.glb`,
+`tower_2.glb`. The loader hashes the hex to pick a variant (a given hill always
+looks the same). Log each asset's source/license in `assets/CREDITS.md`.
+
+**Prompt seeds (pair with the constraints above):**
+- *Hill:* "low-poly stylized Martian rocky mesa / dry-lakebed hill, weathered
+  ochre sandstone, flat-topped, matte, engraved-illustration look, game asset."
+- *Tower:* "low-poly ruined ancient Martian watchtower spire, broken weathered
+  pale marble, slender, crumbling top, matte, stylized game asset."
+
+**Acceptance check before committing a model:** drop it in `assets/terrain/`,
+open the map in isometric, and confirm it stands on the hex (base flush to the
+ground), is roughly hex-sized, turns with `↶/↷` and right-drag, and reads at small
+zoom. If it floats or sinks, the base isn't on `Y = 0`; if it's the wrong size,
+the footprint isn't in hex-circumradius units.
 
 ## 5. SSD ship silhouettes (Phase D "art pass" — already on the roadmap)
 
@@ -232,6 +300,14 @@ Each is one small session; none blocks the art above.
 7. **Terrain tiles** — only after terrain *rules* exist in `TurnEngine`
    (Phase B). The view then draws `hill/tower/dust` tiles for hexes the
    engine reports as terrain. Art from §4 will already be waiting.
+8. **3D terrain models (isometric)** — new `ui/terrain_models.gd`: a small
+   offscreen `SubViewport` + orthographic `Camera3D` (~35° elevation, matched to
+   `ISO_TILT`) + `DirectionalLight3D` (matched to `SUN_SCREEN`) bakes each
+   `assets/terrain/*.glb` (§4b) to a sprite, cached per ~15° of field rotation
+   (plus a straight-down frame for top-down). `hex_map.gd _draw_terrain_model`
+   blits the nearest-angle sprite in the existing depth-sorted pass, **falling
+   back to `_draw_terrain_prism` when no model is present**. Needs one placeholder
+   `.glb` to validate; everything else is already in place.
 
 ## 8. Suggested downtime order
 
