@@ -102,6 +102,10 @@ var _clouds: Array[Dictionary] = []
 const MODEL_GROUND_ANCHOR := 0.62
 var _terrain_models: TerrainModels
 
+## Authored dust-storm sprite sheets. When present their looping frames play at each dust
+## hex; otherwise the procedural puff column is drawn. See dust_sprites.gd.
+var _dust_sprites: DustSprites
+
 var view_mode := ViewMode.OVERHEAD
 var _orientation := 0                  # snapped field facing 0..5 (isometric only)
 var _target_theta := 0.0
@@ -234,6 +238,9 @@ func _ready() -> void:
 	_terrain_models = TerrainModels.new()
 	add_child(_terrain_models)
 	_terrain_models.baked.connect(queue_redraw)
+	# Authored dust-storm animations (optional, like the terrain models above).
+	_dust_sprites = DustSprites.new()
+	_dust_sprites.scan_assets()
 
 
 ## A larger view can outrun the previous clamp, exposing void at an edge — re-pin
@@ -864,6 +871,10 @@ func _draw_dust(hex: Vector2i) -> void:
 	var k := clampf(_height_scale / ISO_HEIGHT, 0.0, 1.0)
 	if k < 0.01:
 		return
+	# Authored animation if one's present; otherwise the hand-drawn puff column below.
+	if _dust_sprites != null and _dust_sprites.has_sprites():
+		_draw_dust_sprite(hex, k)
+		return
 	var base := HexMath.to_cartesian(hex)
 	var seed := float(hex.x * 3 + hex.y * 5)
 	var puffs := 5
@@ -875,6 +886,20 @@ func _draw_dust(hex: Vector2i) -> void:
 		var rad := hex_size * (0.6 - 0.06 * i) * (0.55 + 0.45 * k)
 		var a := 0.22 * (1.0 - 0.1 * i) * k
 		draw_circle(p, maxf(rad, 2.0), Color(0.88, 0.74, 0.34, a))
+
+
+## Blit the current frame of an authored dust-storm sheet at the hex. The variant is
+## chosen by a hex hash (so a tile always storms the same), the frame advances on the
+## shared _anim_t clock, and the whole thing fades in with the tilt like the puffs.
+func _draw_dust_sprite(hex: Vector2i, k: float) -> void:
+	var n := _dust_sprites.variant_count()
+	var variant := posmod(hex.x * 3 + hex.y * 5, n)
+	var frame := _dust_sprites.frame_for_time(variant, _anim_t)
+	var region := _dust_sprites.frame_region(variant, frame)
+	var ground := project(HexMath.to_cartesian(hex), 0.0)
+	var w := DustSprites.FRAME_SPAN_UNITS * hex_size
+	var rect := Rect2(ground - Vector2(w * 0.5, w * DustSprites.GROUND_ANCHOR), Vector2(w, w))
+	draw_texture_rect_region(_dust_sprites.texture(variant), rect, region, Color(1.0, 1.0, 1.0, k))
 
 
 ## Seed the ambient cloud field once the board size is known. Deterministic so clouds

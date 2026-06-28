@@ -109,6 +109,8 @@ func _init() -> void:
 
 	_suite("View projection")
 	_test_view_projection()
+	_test_terrain_models()
+	_test_dust_sprites()
 
 	_suite("Smoke battle")
 	_test_full_battle()
@@ -169,6 +171,57 @@ func _test_view_projection() -> void:
 				rt = false
 		_check(rt, "isometric ground picking round-trips at orientation %d" % o)
 	view.free()
+
+
+## The 3D terrain-model baker is optional: has_model() must agree with whatever .glb
+## assets are actually present (so the map blits a model where one exists and falls back
+## to the procedural prism where none does), and its rotation bucketing must snap a field
+## angle to the nearest cache slot. A hill model ships in assets/terrain/; towers don't.
+func _test_terrain_models() -> void:
+	var tm := TerrainModels.new()
+	tm.scan_assets()
+	# Self-consistency: a type reports a model exactly when it loaded >= 1 variant.
+	for type in [TerrainDef.Type.HILL, TerrainDef.Type.TOWER]:
+		_check(tm.has_model(type) == (tm.variant_count(type) > 0),
+				"has_model agrees with variant_count for type %d" % type)
+	# The kept hill asset loads; no tower asset → prism fallback there.
+	_check(tm.has_model(TerrainDef.Type.HILL), "shipped hill model is loaded")
+	_check(tm.variant_count(TerrainDef.Type.HILL) >= 1, "at least one hill variant present")
+	_check(not tm.has_model(TerrainDef.Type.TOWER), "no tower model present → prism fallback")
+
+	# Angle bucketing: 24 slots of 15°, nearest-rounded and wrapping.
+	var n: int = TerrainModels.AZIMUTH_BUCKETS
+	_check(tm.angle_bucket(0.0) == 0, "bucket of 0 rad is 0")
+	_check(tm.angle_bucket(deg_to_rad(7.0)) == 0, "7° rounds down to bucket 0")
+	_check(tm.angle_bucket(deg_to_rad(8.0)) == 1, "8° rounds up to bucket 1")
+	_check(tm.angle_bucket(deg_to_rad(358.0)) == 0, "358° wraps to bucket 0")
+	_check(tm.angle_bucket(TAU) == 0, "a full turn wraps to bucket 0")
+	_check(tm.angle_bucket(-deg_to_rad(8.0)) == posmod(-1, n), "negative angle wraps correctly")
+	tm.free()
+
+
+## Authored dust-storm sheets are optional: a fresh (unscanned) loader reports nothing
+## so the map draws the procedural puffs, the shipped sheet in assets/terrain/ loads, and
+## the frame clock + atlas math must loop on frame count and map indices to grid cells.
+func _test_dust_sprites() -> void:
+	# Empty loader (never scanned) → procedural fallback path.
+	var empty := DustSprites.new()
+	_check(not empty.has_sprites(), "unscanned loader has no sprites → procedural fallback")
+	_check(empty.variant_count() == 0, "variant_count is 0 before scanning")
+
+	# Scanned loader picks up the shipped duststorm_1 sheet.
+	var ds := DustSprites.new()
+	ds.scan_assets()
+	_check(ds.has_sprites(), "shipped dust sheet is loaded")
+	_check(ds.variant_count() >= 1, "at least one dust variant present")
+
+	# Pure playback math on a synthetic 5×5, 24-frame sheet (appended past any real ones).
+	var v := ds.variant_count()
+	ds._variants.append({"cols": 5, "rows": 5, "frames": 24, "frame_size": 128, "fps": 24.0})
+	_check(ds.frame_for_time(v, 0.0) == 0, "t=0 → frame 0")
+	_check(ds.frame_for_time(v, 0.5) == 12, "0.5s at 24fps → frame 12")
+	_check(ds.frame_for_time(v, 1.0) == 0, "24 frames at 24fps loop back to 0 after 1s")
+	_check(ds.frame_region(v, 6) == Rect2(128, 128, 128, 128), "frame 6 maps to grid cell (1,1)")
 
 
 # ---------------------------------------------------------------------------

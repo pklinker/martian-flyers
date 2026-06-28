@@ -1,0 +1,19 @@
+{
+  "type": "duststorm",
+  "seed": 1,
+  "frameCount": 24,
+  "frameSize": 128,
+  "columns": 5,
+  "rows": 5,
+  "fps": 24,
+  "loop": true,
+  "params": {
+    "density": 150,
+    "radius": 0.72,
+    "swirl": 1.2,
+    "size": 0.085,
+    "haze": 0.4,
+    "frames": 24,
+    "color": "#C9A66B"
+  }
+}

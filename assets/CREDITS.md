@@ -11,3 +11,8 @@ One line per asset: source, author, license. See `ART_PLAN.md §2` for the rule
 ## ui/
 - `app_icon.svg` — original ink-and-parchment flyer icon for this project.
   Own work, CC0. Palette from `ART_PLAN.md §1`.
+
+## terrain/
+
+- `hill_1.glb` — procedurally generated low-poly terrain (3d-gen editor, seed 1). Own work, CC0.
+- `duststorm_1.png` — procedurally generated low-poly terrain (3d-gen editor, seed 1). Own work, CC0.
