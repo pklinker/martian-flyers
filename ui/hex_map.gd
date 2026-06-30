@@ -367,9 +367,24 @@ func pan(delta_px: Vector2) -> void:
 	_clamp_camera()
 	queue_redraw()
 
-## Zoom about the view centre by a multiplicative factor (wheel / pinch).
+## Zoom about the view centre by a multiplicative factor. Thin wrapper over zoom_at for
+## callers that have no focus point (e.g. a toolbar zoom button).
 func zoom_by(factor: float) -> void:
-	hex_size = clampf(hex_size * factor, MIN_HEX, MAX_HEX)
+	zoom_at(factor, size * 0.5)
+
+## Zoom toward a screen point (wheel / pinch): the ground point under `screen_pos` stays
+## put while the zoom changes around it, so scrolling homes in on the cursor rather than
+## the view centre. Clamped to [MIN_HEX, MAX_HEX]; a no-op once a limit is reached.
+func zoom_at(factor: float, screen_pos: Vector2) -> void:
+	var new_size := clampf(hex_size * factor, MIN_HEX, MAX_HEX)
+	if is_equal_approx(new_size, hex_size):
+		return
+	# Hold the world point under the cursor fixed: solve for the camera centre whose
+	# unit-projection keeps that point on the same pixel after the zoom change.
+	var uc := _proj_unit(_cam_center, 0.0) \
+			+ (screen_pos - size * 0.5) * (1.0 / hex_size - 1.0 / new_size)
+	hex_size = new_size
+	_cam_center = _unproj_unit(uc)
 	_clamp_camera()
 	queue_redraw()
 
@@ -522,10 +537,10 @@ func _gui_input(event: InputEvent) -> void:
 					_snap_orientation()
 			MOUSE_BUTTON_WHEEL_UP:
 				if event.pressed:
-					zoom_by(1.1)
+					zoom_at(1.1, event.position)
 			MOUSE_BUTTON_WHEEL_DOWN:
 				if event.pressed:
-					zoom_by(1.0 / 1.1)
+					zoom_at(1.0 / 1.1, event.position)
 	elif event is InputEventMouseMotion:
 		# Right-drag spins the field (either view); left-drag pans past the threshold.
 		if _rotating and (event.button_mask & MOUSE_BUTTON_MASK_RIGHT):
@@ -538,7 +553,7 @@ func _gui_input(event: InputEvent) -> void:
 	elif event is InputEventPanGesture:
 		pan(-event.delta * 24.0)             # trackpad two-finger scroll
 	elif event is InputEventMagnifyGesture:
-		zoom_by(event.factor)                # trackpad pinch
+		zoom_at(event.factor, event.position)   # trackpad pinch toward the cursor
 
 
 ## Resolve a left-click (no pan): a legal-move hex, then any hex.
