@@ -89,18 +89,26 @@ const VIEW_LERP := 7.0                # transition snappiness (higher = faster s
 const SHIP_ALT := 0.6                 # world-height a living flyer hovers at
 
 var _anim_t := 0.0                     # free-running clock for idle bob / drift (iso only)
+var _ambient_accum := 0.0             # time since the last ambient (iso) redraw
+const AMBIENT_FPS := 30.0            # ambient animation cap — looks fine at 30fps
 
 ## Ambient drifting clouds — pure presentation, no gameplay effect, only shown in iso.
 ## Lazily seeded across the board; each drifts along +x and wraps. See _ensure_clouds.
 const CLOUD_HEIGHT := 3.2
 var _clouds: Array[Dictionary] = []
 
-## Authored 3D terrain models (hills/towers). When a matching .glb is present its baked
-## sprite replaces the procedural prism; otherwise this is dormant. See terrain_models.gd.
-## MODEL_GROUND_ANCHOR is the fraction down the sprite where the hex centre sits (the
-## model's base) — tune against a real model once one is dropped in.
-const MODEL_GROUND_ANCHOR := 0.62
-var _terrain_models: TerrainModels
+## Authored 3D models for terrain (hills/towers) and ships. When a matching .glb is
+## present its baked sprite replaces the procedural primitive; otherwise this is dormant.
+## See model_baker.gd. Per-model scale/anchor live in the baker's cfg.
+var _baker: ModelBaker
+
+## Ship class id → 3D model key (assets/ships/<key>_1.glb). Classes without an entry
+## (e.g. battleship) keep the vector token. Pure presentation.
+const SHIP_MODELS := {
+	&"helium_scout": &"scout",
+	&"zodanga_cruiser": &"cruiser",
+	&"one_man_flyer": &"fighter",
+}
 
 ## Authored dust-storm sprite sheets. When present their looping frames play at each dust
 ## hex; otherwise the procedural puff column is drawn. See dust_sprites.gd.
@@ -233,11 +241,11 @@ func _ready() -> void:
 	clip_contents = true                  # keep the scrolling field inside the map rect
 	resized.connect(_on_resized)
 	set_process(false)                    # only tick while effects are alive
-	# Offscreen baker for authored 3D terrain models. Adds no 3D nodes and no cost
-	# until a model is present in assets/terrain/; otherwise terrain stays prisms.
-	_terrain_models = TerrainModels.new()
-	add_child(_terrain_models)
-	_terrain_models.baked.connect(queue_redraw)
+	# Offscreen baker for authored 3D models (terrain + ships). Adds no 3D nodes and no
+	# cost until a model is present; otherwise terrain stays prisms and ships stay tokens.
+	_baker = ModelBaker.new()
+	add_child(_baker)
+	_baker.baked.connect(queue_redraw)
 	# Authored dust-storm animations (optional, like the terrain models above).
 	_dust_sprites = DustSprites.new()
 	_dust_sprites.scan_assets()
@@ -278,8 +286,6 @@ func clear_effects() -> void:
 func _process(delta: float) -> void:
 	var animating := _step_view(delta)
 	_anim_t += delta
-	# Isometric is a living scene (hovering flyers, drifting dust/clouds), so keep
-	# ticking while it's shown; overhead is static and idles once effects clear.
 	var ambient := view_mode == ViewMode.ISOMETRIC
 	var alive := false
 	for fx in _tracers:
@@ -294,7 +300,17 @@ func _process(delta: float) -> void:
 	_flashes = _flashes.filter(func(f: Dictionary) -> bool: return f["t"] < f["life"])
 	if not alive and not animating and not ambient:
 		set_process(false)
-	queue_redraw()
+		queue_redraw()
+		return
+	# Combat effects and view transitions need every frame; ambient iso animation
+	# (ship bob, drifting clouds) looks fine at 30fps and halves the redraw rate.
+	if alive or animating:
+		queue_redraw()
+	else:
+		_ambient_accum += delta
+		if _ambient_accum >= 1.0 / AMBIENT_FPS:
+			_ambient_accum = 0.0
+			queue_redraw()
 
 
 ## Fit every live ship into view at once: set the zoom to hold them all with a
@@ -576,9 +592,11 @@ func _draw() -> void:
 			var pts := _hex_corners(Vector2i(q, r))
 			draw_polyline(pts + PackedVector2Array([pts[0]]), GRID, 1.0)
 
-	# Flat terrain ground (dust tint + a footprint for hills/towers). The raised
-	# 3D massing of hills/towers is drawn later in the depth-sorted object pass; this
-	# is just the tile they stand on, so it reads correctly in overhead too.
+	# Flat terrain ground pass. In overhead the coloured polygon IS the terrain
+	# marker. In isometric, terrain with a 3D model draws its own ground texture
+	# via the depth-sorted model pass — suppress the flat fill/border there so it
+	# doesn't bleed around the model edges. Dust has no model so its sandy tint
+	# is always shown; it reads as atmospheric haze over the affected hexes.
 	if engine != null:
 		for hex: Vector2i in engine.terrain:
 			var c := hex_to_pixel(hex)
@@ -587,12 +605,14 @@ func _draw() -> void:
 			var t: int = engine.terrain[hex]
 			var col := TerrainDef.render_color(t)
 			var pts := _hex_corners(hex)
-			draw_colored_polygon(pts, col)
-			# Heavier border on LOS-blocking terrain so captains can spot it.
-			var edge_col := col.darkened(0.35)
-			var edge_w := 2.5 if TerrainDef.blocks_los(t) else 1.0
-			draw_polyline(pts + PackedVector2Array([pts[0]]), edge_col, edge_w)
-			# Single-letter label: H = Hill, T = Tower, D = Dust.
+			# Skip the fill + border for model-backed terrain in isometric view.
+			var has_model := _baker != null and _baker.has_model(t)
+			if not has_model or iso_k <= 0.02:
+				draw_colored_polygon(pts, col)
+				var edge_col := col.darkened(0.35)
+				var edge_w := 2.5 if TerrainDef.blocks_los(t) else 1.0
+				draw_polyline(pts + PackedVector2Array([pts[0]]), edge_col, edge_w)
+			# Single-letter label kept in all modes for quick terrain identification.
 			draw_string(font, c + Vector2(-4.0, 5.0),
 					TerrainDef.display_name(t).substr(0, 1),
 					HORIZONTAL_ALIGNMENT_LEFT, -1, 10,
@@ -721,21 +741,48 @@ func _draw_ship(font: Font, s: ShipState) -> void:
 	if s == active_ship:
 		draw_arc(c, hex_size * 0.92, 0.0, TAU, 32, ACTIVE_RING, 3.0)
 
-	# Hull: a triangle pointing along facing, its corners projected on the ground at
-	# altitude so it foreshortens and turns with the field. A darker keel a touch lower
-	# gives the token a hint of thickness in iso.
-	var tip_c := cart + _facing_dir(s.facing) * 0.66
-	var b1_c := cart + 0.55 * _facing_dir_deg(s.facing * 60.0 + 145.0)
-	var b2_c := cart + 0.55 * _facing_dir_deg(s.facing * 60.0 - 145.0)
-	if not down and _height_scale > 0.01:
-		var keel := PackedVector2Array([project(tip_c, alt - 0.12),
-				project(b1_c, alt - 0.12), project(b2_c, alt - 0.12)])
-		draw_colored_polygon(keel, col.darkened(0.45))
-	var tip := project(tip_c, alt)
-	var b1 := project(b1_c, alt)
-	var b2 := project(b2_c, alt)
-	draw_colored_polygon(PackedVector2Array([tip, b1, b2]), col)
-	draw_polyline(PackedVector2Array([tip, b1, b2, tip]), Color(0, 0, 0, 0.6), 1.5)
+	# Hull: an authored 3D model billboard when one exists for this class (iso, living
+	# ships); otherwise the vector triangle. The model's azimuth = the ship's heading plus
+	# the field rotation, so it turns both as the ship manoeuvres and as the map spins.
+	var drew_model := false
+	var key: StringName = SHIP_MODELS.get(s.def.id, &"")
+	if not down and _height_scale > 0.02 and _baker != null and _baker.has_model(key):
+		var azimuth := s.facing * (TAU / 6.0) + _theta
+		var bucket := _baker.angle_bucket(azimuth)
+		if _baker.get_texture(key, 0, bucket, ModelBaker.View.ISO) == null:
+			_baker.request(key, 0, bucket, ModelBaker.View.ISO)   # bake the exact angle
+		# Hold the nearest already-baked angle while that bake lands, so spinning the map
+		# doesn't flicker the hull back to the vector token between buckets.
+		var tex := _baker.nearest_texture(key, 0, bucket, ModelBaker.View.ISO)
+		if tex != null:
+			# Side-colour base ring on the ground — the shared 3D hulls aren't faction
+			# tinted, so this is what tells player (blue) from enemy (red) at a glance.
+			var ring := _ground_ellipse(cart, 0.5)
+			draw_polyline(ring + PackedVector2Array([ring[0]]), SIDE_COLORS[s.side], 2.5)
+			var w := _baker.span(key) * hex_size
+			draw_texture_rect(tex, Rect2(c - Vector2(w * 0.5, w * _baker.anchor(key)),
+					Vector2(w, w)), false)
+			# Heading needle over the model: baked models can look similar from
+			# multiple angles, so always draw a bow line to make facing unambiguous.
+			var bow := project(cart + _facing_dir(s.facing) * 0.80, alt)
+			draw_line(c, bow, Color(1.0, 1.0, 1.0, 0.85), 2.5)
+			draw_circle(bow, maxf(hex_size * 0.09, 2.5), Color(1.0, 1.0, 1.0, 0.85))
+			drew_model = true
+	if not drew_model:
+		# Triangle token: corners projected on the ground at altitude so it foreshortens
+		# and turns with the field; a darker keel a touch lower hints at thickness in iso.
+		var tip_c := cart + _facing_dir(s.facing) * 0.66
+		var b1_c := cart + 0.55 * _facing_dir_deg(s.facing * 60.0 + 145.0)
+		var b2_c := cart + 0.55 * _facing_dir_deg(s.facing * 60.0 - 145.0)
+		if not down and _height_scale > 0.01:
+			var keel := PackedVector2Array([project(tip_c, alt - 0.12),
+					project(b1_c, alt - 0.12), project(b2_c, alt - 0.12)])
+			draw_colored_polygon(keel, col.darkened(0.45))
+		var tip := project(tip_c, alt)
+		var b1 := project(b1_c, alt)
+		var b2 := project(b2_c, alt)
+		draw_colored_polygon(PackedVector2Array([tip, b1, b2]), col)
+		draw_polyline(PackedVector2Array([tip, b1, b2, tip]), Color(0, 0, 0, 0.6), 1.5)
 
 	# Destroyed: X over the token
 	if s.is_destroyed:
@@ -773,23 +820,26 @@ func _terrain_radius(t: int) -> float:
 
 ## Deterministic model variant for a hex, so a given hill always looks the same.
 func _terrain_variant(hex: Vector2i, t: int) -> int:
-	var n := _terrain_models.variant_count(t)
+	var n := _baker.variant_count(t)
 	return posmod(hex.x * 7 + hex.y * 13, n) if n > 0 else 0
 
 ## Draw a terrain feature using its authored 3D model when one exists, else the prism.
 ## The baked sprite is blitted at the hex with a soft ground shadow; if the needed angle
 ## isn't baked yet we request it and draw the prism this frame (it pops in on `baked`).
 func _draw_terrain_model(font: Font, hex: Vector2i, t: int) -> void:
-	if _terrain_models == null or not _terrain_models.has_model(t):
+	if _baker == null or not _baker.has_model(t):
 		_draw_terrain_prism(font, hex, t)
 		return
-	var view := TerrainModels.View.ISO if _height_scale > 0.02 else TerrainModels.View.TOPDOWN
+	var view := ModelBaker.View.ISO if _height_scale > 0.02 else ModelBaker.View.TOPDOWN
 	var variant := _terrain_variant(hex, t)
-	var bucket := _terrain_models.angle_bucket(_theta)
-	var tex := _terrain_models.get_texture(t, variant, bucket, view)
+	var bucket := _baker.angle_bucket(_theta)
+	if _baker.get_texture(t, variant, bucket, view) == null:
+		_baker.request(t, variant, bucket, view)
+	# Hold the nearest baked angle while the exact bucket bakes, so rotation doesn't
+	# flicker the feature back to the prism each time it crosses a bucket edge.
+	var tex := _baker.nearest_texture(t, variant, bucket, view)
 	if tex == null:
-		_terrain_models.request(t, variant, bucket, view)
-		_draw_terrain_prism(font, hex, t)            # fallback until the bake lands
+		_draw_terrain_prism(font, hex, t)            # nothing baked yet — fall back
 		return
 
 	var base := HexMath.to_cartesian(hex)
@@ -803,9 +853,10 @@ func _draw_terrain_model(font: Font, hex: Vector2i, t: int) -> void:
 			var a := deg_to_rad(60.0 * i)
 			shp.append(project(base + Vector2(cos(a), sin(a)) * _terrain_radius(t), 0.0) + shoff)
 		draw_colored_polygon(shp, Color(0.05, 0.04, 0.03, 0.20 * sh_k))
-	# The sprite spans MODEL_FRAME_UNITS hex-units; on the map a hex-unit is hex_size px.
-	var w := TerrainModels.MODEL_FRAME_UNITS * hex_size
-	var rect := Rect2(ground - Vector2(w * 0.5, w * MODEL_GROUND_ANCHOR), Vector2(w, w))
+	# The sprite covers span(t) hex-units; on the map a hex-unit is hex_size px. Anchor
+	# it so the model base sits at the hex centre.
+	var w := _baker.span(t) * hex_size
+	var rect := Rect2(ground - Vector2(w * 0.5, w * _baker.anchor(t)), Vector2(w, w))
 	draw_texture_rect(tex, rect, false)
 
 

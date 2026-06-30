@@ -16,3 +16,12 @@ One line per asset: source, author, license. See `ART_PLAN.md §2` for the rule
 
 - `hill_1.glb` — procedurally generated low-poly terrain (3d-gen editor, seed 1). Own work, CC0.
 - `duststorm_1.png` — procedurally generated low-poly terrain (3d-gen editor, seed 1). Own work, CC0.
+- `tower_1.glb` — procedurally generated low-poly terrain (3d-gen editor, seed 1). Own work, CC0.
+
+## assets/ships/
+
+- `fighter_1.glb` — procedurally generated low-poly terrain (3d-gen editor, seed 1). Own work, CC0.
+- `scout_1.glb` — procedurally generated low-poly terrain (3d-gen editor, seed 1). Own work, CC0.
+- `cruiser_1.glb` — procedurally generated low-poly terrain (3d-gen editor, seed 1). Own work, CC0.
+
+## assets/buildings/

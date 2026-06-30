@@ -109,7 +109,7 @@ func _init() -> void:
 
 	_suite("View projection")
 	_test_view_projection()
-	_test_terrain_models()
+	_test_model_baker()
 	_test_dust_sprites()
 
 	_suite("Smoke battle")
@@ -177,20 +177,25 @@ func _test_view_projection() -> void:
 ## assets are actually present (so the map blits a model where one exists and falls back
 ## to the procedural prism where none does), and its rotation bucketing must snap a field
 ## angle to the nearest cache slot. A hill model ships in assets/terrain/; towers don't.
-func _test_terrain_models() -> void:
-	var tm := TerrainModels.new()
+func _test_model_baker() -> void:
+	var tm := ModelBaker.new()
 	tm.scan_assets()
 	# Self-consistency: a type reports a model exactly when it loaded >= 1 variant.
 	for type in [TerrainDef.Type.HILL, TerrainDef.Type.TOWER]:
 		_check(tm.has_model(type) == (tm.variant_count(type) > 0),
 				"has_model agrees with variant_count for type %d" % type)
-	# The kept hill asset loads; no tower asset → prism fallback there.
+	# Shipped assets load: a hill (assets/terrain/), a tower building (assets/buildings/),
+	# and the three ship classes (assets/ships/). Classes without a model fall back.
 	_check(tm.has_model(TerrainDef.Type.HILL), "shipped hill model is loaded")
 	_check(tm.variant_count(TerrainDef.Type.HILL) >= 1, "at least one hill variant present")
-	_check(not tm.has_model(TerrainDef.Type.TOWER), "no tower model present → prism fallback")
+	_check(tm.has_model(TerrainDef.Type.TOWER), "shipped tower building model is loaded")
+	_check(tm.has_model(&"scout"), "scout ship model is loaded")
+	_check(tm.has_model(&"cruiser"), "cruiser ship model is loaded")
+	_check(tm.has_model(&"fighter"), "fighter ship model is loaded")
+	_check(not tm.has_model(&"battleship"), "battleship has no model → token fallback")
 
 	# Angle bucketing: 24 slots of 15°, nearest-rounded and wrapping.
-	var n: int = TerrainModels.AZIMUTH_BUCKETS
+	var n: int = ModelBaker.AZIMUTH_BUCKETS
 	_check(tm.angle_bucket(0.0) == 0, "bucket of 0 rad is 0")
 	_check(tm.angle_bucket(deg_to_rad(7.0)) == 0, "7° rounds down to bucket 0")
 	_check(tm.angle_bucket(deg_to_rad(8.0)) == 1, "8° rounds up to bucket 1")

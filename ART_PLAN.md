@@ -147,15 +147,28 @@ now so tiles are ready the day the rules land. GDD terrain set: **hills**
 | `dust_storm_1.png` … `dust_storm_3.png` | dust storm | ~50–60% opacity swirl, warm grey-orange; semi-transparent so ships ghost through; 3 variants can double as animation frames |
 | `sea_bottom_1.png` … `sea_bottom_4.png` | plain ground variation | *subtle*: faint moss-yellow mottling, dry cracks, an old keel-scar — barely-there texture to break the flat ochre; must tile against `#DECCA8` without visible seams |
 
-## 4b. 3D terrain models (isometric view) — *AI-generation contract*
+## 4b. 3D models (isometric view) — *AI-generation contract*
 
-The isometric view draws hills and towers as procedural extruded prisms
-(`hex_map.gd _draw_terrain_prism`). Authored **3D models** replace that massing
-with real mountains and ruined towers. These are **glTF meshes rendered live**:
-a small offscreen `SubViewport` + `Camera3D` bakes each model to a sprite at the
-current view angle (cached per ~15° of field rotation), which the depth-sorted
-draw pass blits onto the hex. The **prism stays the fallback** — drop a model in
-and it takes over for that terrain type; with no model, nothing changes.
+The isometric view draws hills, towers, and ships as procedural primitives
+(`hex_map.gd _draw_terrain_prism` / the vector ship token). Authored **3D models**
+replace those with real meshes. They are **glTF rendered live**: the shared
+`model_baker.gd` rig (an offscreen `SubViewport` + orthographic `Camera3D`) bakes
+each model to a sprite at the current view angle (cached per ~15° of field
+rotation), which the depth-sorted draw pass blits onto the hex. The **primitive
+stays the fallback** — drop a model in and it takes over; with none, nothing changes.
+
+**One pipeline, three asset folders** (all follow the contract below):
+- `assets/terrain/` — `hill_<n>.glb` (broad mesas).
+- `assets/buildings/` — `tower_<n>.glb` (ruined towers; a tower is a building).
+- `assets/ships/` — `scout_<n>.glb`, `cruiser_<n>.glb`, `fighter_<n>.glb`, mapped
+  to the classes `helium_scout` / `zodanga_cruiser` / `one_man_flyer`. Ships bake
+  at `facing + field-rotation`, hover with a shadow, and get a **side-colour base
+  ring** (the shared hulls aren't faction-tinted, so the ring is what reads
+  player-blue vs enemy-red). `battleship` has no model yet → keeps the token.
+- `assets/effects/` — reserved (wrecks/explosions); empty for now.
+
+Per-model on-screen scale, framing, and ground anchor are tuned in
+`model_baker.gd`'s `_register(...)` table, not in the asset.
 
 This section is the contract to hand an **AI 3D generator** (Meshy, Tripo, etc.):
 give it the prose seed *plus* every constraint below — text-to-3D tools ignore
