@@ -46,6 +46,14 @@ var engine: TurnEngine
 var highlight_moves: Array[Dictionary] = []
 var active_ship: ShipState
 
+## Ship overlay markers — the white heading needle and the name-initial letter drawn
+## over each hull. Pure presentation; toggled from the in-game settings menu. Redraws
+## when changed so the toggle takes effect immediately.
+var show_ship_markers := true:
+	set(v):
+		show_ship_markers = v
+		queue_redraw()
+
 ## Legal deployment hexes for the pre-game placement phase. A separate channel
 ## from highlight_moves (which is move-shaped and means "legal moves this
 ## impulse") so the two never interfere. Drawn as a translucent zone tint.
@@ -603,6 +611,13 @@ func _draw() -> void:
 			if c.x < -cull or c.x > size.x + cull or c.y < -cull or c.y > size.y + cull:
 				continue
 			var t: int = engine.terrain[hex]
+			# Dust hexes backed by an authored sprite are drawn entirely by that sprite
+			# once the field tilts into iso — the flat ochre tint and "D" label would
+			# just show through beneath it, so suppress them here. Overhead (no sprite
+			# drawn) keeps the flat haze + label.
+			if t == TerrainDef.Type.DUST_STORM and iso_k > 0.02 \
+					and _dust_sprites != null and _dust_sprites.has_sprites():
+				continue
 			var col := TerrainDef.render_color(t)
 			var pts := _hex_corners(hex)
 			# Skip the fill + border for model-backed terrain in isometric view.
@@ -747,7 +762,10 @@ func _draw_ship(font: Font, s: ShipState) -> void:
 	var drew_model := false
 	var key: StringName = SHIP_MODELS.get(s.def.id, &"")
 	if not down and _height_scale > 0.02 and _baker != null and _baker.has_model(key):
-		var azimuth := s.facing * (TAU / 6.0) + _theta
+		# The authored hulls' local forward axis is reversed relative to facing, so
+		# without +PI they bake stern-first and the bow ends up opposite the direction
+		# of travel. +PI aligns the bow with _facing_dir (and the heading needle).
+		var azimuth := s.facing * (TAU / 6.0) + _theta + PI
 		var bucket := _baker.angle_bucket(azimuth)
 		if _baker.get_texture(key, 0, bucket, ModelBaker.View.ISO) == null:
 			_baker.request(key, 0, bucket, ModelBaker.View.ISO)   # bake the exact angle
@@ -762,11 +780,14 @@ func _draw_ship(font: Font, s: ShipState) -> void:
 			var w := _baker.span(key) * hex_size
 			draw_texture_rect(tex, Rect2(c - Vector2(w * 0.5, w * _baker.anchor(key)),
 					Vector2(w, w)), false)
-			# Heading needle over the model: baked models can look similar from
-			# multiple angles, so always draw a bow line to make facing unambiguous.
-			var bow := project(cart + _facing_dir(s.facing) * 0.80, alt)
-			draw_line(c, bow, Color(1.0, 1.0, 1.0, 0.85), 2.5)
-			draw_circle(bow, maxf(hex_size * 0.09, 2.5), Color(1.0, 1.0, 1.0, 0.85))
+			# Heading needle over the model: these are pusher craft (propeller on the
+			# stern), so the prop trails the direction of travel and can read as the
+			# nose at a glance. The needle points along _facing_dir — the bow and the
+			# movement direction — to make the real heading unambiguous.
+			if show_ship_markers:
+				var bow := project(cart + _facing_dir(s.facing) * 0.80, alt)
+				draw_line(c, bow, Color(1.0, 1.0, 1.0, 0.85), 2.5)
+				draw_circle(bow, maxf(hex_size * 0.09, 2.5), Color(1.0, 1.0, 1.0, 0.85))
 			drew_model = true
 	if not drew_model:
 		# Triangle token: corners projected on the ground at altitude so it foreshortens
@@ -791,9 +812,10 @@ func _draw_ship(font: Font, s: ShipState) -> void:
 		draw_line(c + Vector2(r, -r), c + Vector2(-r, r), Color(0.7, 0.1, 0.1), 3.0)
 
 	# Name initial
-	var initial := s.def.display_name.substr(0, 1)
-	draw_string(font, c + Vector2(-4.0, 4.0), initial,
-			HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color.WHITE)
+	if show_ship_markers:
+		var initial := s.def.display_name.substr(0, 1)
+		draw_string(font, c + Vector2(-4.0, 4.0), initial,
+				HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color.WHITE)
 
 
 ## A flat ellipse on the ground plane around a cartesian point, radius in hex units,
@@ -823,6 +845,21 @@ func _terrain_variant(hex: Vector2i, t: int) -> int:
 	var n := _baker.variant_count(t)
 	return posmod(hex.x * 7 + hex.y * 13, n) if n > 0 else 0
 
+## Soft cast shadow for a standing feature. `ring` is the projected ground footprint;
+## the shadow is the convex hull of that footprint and a copy of it pushed along the sun
+## by the feature's height. Anchoring the near edge at the base keeps the shadow attached
+## to the feature instead of floating off below a tall, narrow one (e.g. a tower).
+func _draw_feature_shadow(ring: PackedVector2Array, height: float, sh_k: float) -> void:
+	if sh_k <= 0.01 or ring.is_empty():
+		return
+	var shoff := SUN_SCREEN * height * hex_size * 0.5
+	var pts := PackedVector2Array()
+	pts.append_array(ring)
+	for p in ring:
+		pts.append(p + shoff)
+	draw_colored_polygon(Geometry2D.convex_hull(pts), Color(0.05, 0.04, 0.03, 0.20 * sh_k))
+
+
 ## Draw a terrain feature using its authored 3D model when one exists, else the prism.
 ## The baked sprite is blitted at the hex with a soft ground shadow; if the needed angle
 ## isn't baked yet we request it and draw the prism this frame (it pops in on `baked`).
@@ -844,15 +881,17 @@ func _draw_terrain_model(font: Font, hex: Vector2i, t: int) -> void:
 
 	var base := HexMath.to_cartesian(hex)
 	var ground := project(base, 0.0)
-	# Soft ground shadow, offset along the sun and fading in with the tilt (as the prism).
+	# Soft ground shadow, anchored at the base and stretched along the sun by height.
+	# The pool tracks the slim model trunk, not the full hex footprint, so it neither
+	# reads wider than the tower nor pools out in front of it (the front half of a hex
+	# footprint projects toward the camera in iso).
 	var sh_k := clampf(_height_scale / ISO_HEIGHT, 0.0, 1.0)
-	if sh_k > 0.01:
-		var shoff := SUN_SCREEN * TerrainDef.render_height(t) * hex_size * 0.5
-		var shp := PackedVector2Array()
-		for i in 6:
-			var a := deg_to_rad(60.0 * i)
-			shp.append(project(base + Vector2(cos(a), sin(a)) * _terrain_radius(t), 0.0) + shoff)
-		draw_colored_polygon(shp, Color(0.05, 0.04, 0.03, 0.20 * sh_k))
+	var srad := _terrain_radius(t) * 0.5
+	var ring := PackedVector2Array()
+	for i in 6:
+		var a := deg_to_rad(60.0 * i)
+		ring.append(project(base + Vector2(cos(a), sin(a)) * srad, 0.0))
+	_draw_feature_shadow(ring, TerrainDef.render_height(t), sh_k)
 	# The sprite covers span(t) hex-units; on the map a hex-unit is hex_size px. Anchor
 	# it so the model base sits at the hex centre.
 	var w := _baker.span(t) * hex_size
@@ -881,14 +920,9 @@ func _draw_terrain_prism(font: Font, hex: Vector2i, t: int) -> void:
 		ground.append(project(base + off, 0.0))
 		top.append(project(base + off, height))
 
-	# Soft cast shadow on the ground, offset along the sun and fading in with the tilt.
+	# Soft cast shadow on the ground, anchored at the base and stretched along the sun.
 	var sh_k := clampf(_height_scale / ISO_HEIGHT, 0.0, 1.0)
-	if sh_k > 0.01:
-		var shoff := SUN_SCREEN * height * hex_size * 0.5
-		var shp := PackedVector2Array()
-		for i in 6:
-			shp.append(ground[i] + shoff)
-		draw_colored_polygon(shp, Color(0.05, 0.04, 0.03, 0.20 * sh_k))
+	_draw_feature_shadow(ground, height, sh_k)
 
 	# Side walls, each shaded by its outward normal vs the sun, painted far-to-near.
 	var faces: Array[Dictionary] = []

@@ -35,6 +35,11 @@ var ssd_stack: VBoxContainer          # holds the per-ship SSD panels
 var view_toggle_btn: Button           # overhead ⇄ isometric
 var rotate_l_btn: Button              # rotate field counter-clockwise (iso only)
 var rotate_r_btn: Button              # rotate field clockwise (iso only)
+var settings_btn: Button              # opens the display-settings popup
+var settings_menu: PopupMenu          # checkable display toggles (ship markers, …)
+
+## PopupMenu item ids for settings_menu.
+const SETTING_SHIP_MARKERS := 0
 
 # Game-over overlay (centered modal shown on victory/defeat/draw).
 var game_over_overlay: Panel
@@ -141,6 +146,9 @@ func _build_ui() -> void:
 	rotate_r_btn = _add_button(row1, "↷", _on_rotate_field.bind(1), "system")
 	rotate_l_btn.tooltip_text = "Rotate the field left — or right-drag the map to spin it freely"
 	rotate_r_btn.tooltip_text = "Rotate the field right — or right-drag the map to spin it freely"
+	settings_btn = _add_button(row1, "Settings", _on_settings, "system")
+	settings_btn.tooltip_text = "Display options"
+	_build_settings_menu()
 	# Save / Load / New Game now live on the title screen; the only "leave" action
 	# kept here is a gear that returns there (auto-suspending the battle).
 	var menu_btn := _add_button(row1, "⚙", _on_quit_to_menu, "warn")
@@ -313,6 +321,35 @@ func _on_rotate_field(step: int) -> void:
 func _sync_view_buttons() -> void:
 	var iso: bool = map.view_mode == HexMapView.ViewMode.ISOMETRIC
 	view_toggle_btn.text = "View: Isometric" if iso else "View: Top-Down"
+
+
+## Build the display-settings popup. One checkable entry per overlay toggle; checks are
+## synced from the live map state each time the menu opens (in case anything else flips
+## them). Currently just the ship markers (heading needle + name initial).
+func _build_settings_menu() -> void:
+	settings_menu = PopupMenu.new()
+	settings_menu.hide_on_checkable_item_selection = false   # keep open so the check is visible
+	settings_menu.add_check_item("Ship markers", SETTING_SHIP_MARKERS)
+	settings_menu.id_pressed.connect(_on_settings_item)
+	add_child(settings_menu)
+
+
+## Pop the settings menu open just below its button, with checks reflecting current state.
+func _on_settings() -> void:
+	settings_menu.set_item_checked(
+			settings_menu.get_item_index(SETTING_SHIP_MARKERS), map.show_ship_markers)
+	var at := settings_btn.get_screen_position() + Vector2(0.0, settings_btn.size.y)
+	settings_menu.popup(Rect2i(Vector2i(at), Vector2i.ZERO))
+
+
+## Apply a settings toggle. Checkable items flip the matching map flag; the menu stays
+## open so the player can see the check change (Godot keeps a check_item popup up).
+func _on_settings_item(id: int) -> void:
+	match id:
+		SETTING_SHIP_MARKERS:
+			map.show_ship_markers = not map.show_ship_markers
+			settings_menu.set_item_checked(
+					settings_menu.get_item_index(id), map.show_ship_markers)
 
 
 ## Centered modal shown when the game ends; hidden at new-game start.
