@@ -60,6 +60,11 @@ func render_color() -> Color:
 func render_height() -> float:
 	return float(render.get("height", 0.0))
 
+## Prism-fallback footprint radius in hex units (1.0 fills the hex; a narrow
+## column like a tower sets it smaller). Only used when no model is baked.
+func render_footprint() -> float:
+	return float(render.get("footprint", 1.0))
+
 ## "model" (extruded mesh), "sprite" (animated billboard), or "" (procedural).
 ## The renderer branches on THIS, never on a specific id (§0.6).
 func render_type() -> String:

@@ -13,8 +13,6 @@ extends Node
 
 signal baked   # a new sprite landed in the cache; listeners should queue_redraw
 
-const TERRAIN_DIR := "res://assets/terrain/"
-const BUILDINGS_DIR := "res://assets/buildings/"
 const SHIP_DIR := "res://assets/ships/"
 const BAKE_SIZE := 192                  # px square of each baked sprite
 const AZIMUTH_BUCKETS := 24             # rotation snap for the cache (15° each)
@@ -23,7 +21,7 @@ const TOPDOWN_ELEVATION_DEG := 89.0     # near-straight-down for the flat view
 
 enum View { TOPDOWN, ISO }
 
-## key (int TerrainDef.Type, or StringName ship-model) -> Array[PackedScene] variants.
+## key (StringName — a terrain-kind id or a ship-model name) -> Array[PackedScene] variants.
 var _models: Dictionary = {}
 ## key -> { frame: float (camera world-units to fit the model),
 ##          span: float (on-screen size in hex-units),
@@ -52,13 +50,21 @@ func _ready() -> void:
 func scan_assets() -> void:
 	_models.clear()
 	_cfg.clear()
-	# Terrain/buildings: authored in hex units (ART_PLAN §4b). frame ≈ model extent,
-	# span ≈ hexes covered on screen, look_y ≈ mid-height, anchor ≈ fraction down the
-	# sprite where the hex centre (model base) sits. Towers are buildings (buildings/).
-	_register(TerrainDef.Type.HILL, TERRAIN_DIR, "hill", 2.2, 2.0, 0.3, 0.58)
-	_register(TerrainDef.Type.TOWER, BUILDINGS_DIR, "tower", 2.0, 1.1, 0.7, 0.72)
-	if not has_model(TerrainDef.Type.TOWER):
-		_register(TerrainDef.Type.TOWER, TERRAIN_DIR, "tower", 2.0, 1.1, 0.7, 0.72)
+	# Terrain / building kinds come from the catalog: each kind with a render.model
+	# block registers a bake entry keyed by its id, resolving assets against the
+	# kind's source_root (res:// for core, user://mods/<pack>/ for a mod — §0.3).
+	# Authoring units are hex-relative (ART_PLAN §4b): frame ≈ model extent, span ≈
+	# hexes covered, look_y ≈ mid-height, anchor ≈ fraction down the sprite where the
+	# hex centre sits. (Runtime glb loading from user:// mod packs is T5; core kinds
+	# resolve to res:// and load via the editor-baked path today.)
+	for kid in MapLibrary.kind_ids():
+		var k := MapLibrary.kind(kid)
+		if not k.has_model():
+			continue
+		var mdl: Dictionary = k.render["model"]
+		var dir := k.source_root.path_join("assets").path_join(String(mdl["dir"])) + "/"
+		_register(kid, dir, String(mdl["prefix"]),
+				float(mdl["frame"]), float(mdl["span"]), float(mdl["look_y"]), float(mdl["anchor"]))
 	# Ships: AI-authored without a strict scale spec, so frame is tuned by eye to fill
 	# the bake; span keeps every class a readable size; anchor centres the hovering hull.
 	_register(&"scout", SHIP_DIR, "scout", 2.0, 1.7, 0.2, 0.5)

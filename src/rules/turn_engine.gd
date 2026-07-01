@@ -28,7 +28,8 @@ var turn_number: int = 1
 var phase: Phase = Phase.ALLOCATION
 var rng := RandomNumberGenerator.new()
 
-## Terrain for this engagement: maps hex position to TerrainDef.Type.
+## Terrain for this engagement: maps hex position to a terrain-kind id
+## (StringName, resolved through the catalog — see TerrainDef / MapLibrary).
 ## Hills and towers block LOS (shots declared through them do not fire).
 ## Dust storms add a spotting penalty to the to-hit roll (cancelled by
 ## lookout crew in the firer's allocation).
@@ -218,17 +219,17 @@ func _place_terrain() -> void:
 	# Ships at (20,10) and (32,4) converge through roughly (26,7); the ridge
 	# forces each captain to decide whether to punch through (and eat a shot
 	# from the exposed side) or bank around the flanks.
-	terrain[Vector2i(25, 7)] = TerrainDef.Type.HILL
-	terrain[Vector2i(26, 7)] = TerrainDef.Type.HILL
+	terrain[Vector2i(25, 7)] = &"hill"
+	terrain[Vector2i(26, 7)] = &"hill"
 	# Ruined tower on the NE flank — blocks LOS and gives cover to a flanking
 	# scout trying to work around the cruiser.
-	terrain[Vector2i(27, 5)] = TerrainDef.Type.TOWER
+	terrain[Vector2i(27, 5)] = &"tower"
 	# Dust storm region near the cruiser's side. Flying through here costs a
 	# +1 per hex on every shot, but lookout crew cancel it — good position for
 	# the scout's torpedo run if the cruiser retreats into the dust.
-	terrain[Vector2i(28, 8)] = TerrainDef.Type.DUST_STORM
-	terrain[Vector2i(29, 8)] = TerrainDef.Type.DUST_STORM
-	terrain[Vector2i(29, 7)] = TerrainDef.Type.DUST_STORM
+	terrain[Vector2i(28, 8)] = &"dust_storm"
+	terrain[Vector2i(29, 8)] = &"dust_storm"
+	terrain[Vector2i(29, 7)] = &"dust_storm"
 
 
 # ---------------------------------------------------------------------------

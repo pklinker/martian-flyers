@@ -891,7 +891,7 @@ func _has_dust() -> bool:
 	if engine == null:
 		return false
 	for t in engine.terrain.values():
-		if int(t) == TerrainDef.Type.DUST_STORM:
+		if TerrainDef.spot_penalty(t) > 0:
 			return true
 	return false
 

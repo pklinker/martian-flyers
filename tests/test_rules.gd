@@ -186,15 +186,15 @@ func _test_view_projection() -> void:
 func _test_model_baker() -> void:
 	var tm := ModelBaker.new()
 	tm.scan_assets()
-	# Self-consistency: a type reports a model exactly when it loaded >= 1 variant.
-	for type in [TerrainDef.Type.HILL, TerrainDef.Type.TOWER]:
-		_check(tm.has_model(type) == (tm.variant_count(type) > 0),
-				"has_model agrees with variant_count for type %d" % type)
+	# Self-consistency: a kind reports a model exactly when it loaded >= 1 variant.
+	for kind in [&"hill", &"tower"]:
+		_check(tm.has_model(kind) == (tm.variant_count(kind) > 0),
+				"has_model agrees with variant_count for kind '%s'" % kind)
 	# Shipped assets load: a hill (assets/terrain/), a tower building (assets/buildings/),
 	# and the three ship classes (assets/ships/). Classes without a model fall back.
-	_check(tm.has_model(TerrainDef.Type.HILL), "shipped hill model is loaded")
-	_check(tm.variant_count(TerrainDef.Type.HILL) >= 1, "at least one hill variant present")
-	_check(tm.has_model(TerrainDef.Type.TOWER), "shipped tower building model is loaded")
+	_check(tm.has_model(&"hill"), "shipped hill model is loaded")
+	_check(tm.variant_count(&"hill") >= 1, "at least one hill variant present")
+	_check(tm.has_model(&"tower"), "shipped tower building model is loaded")
 	_check(tm.has_model(&"scout"), "scout ship model is loaded")
 	_check(tm.has_model(&"cruiser"), "cruiser ship model is loaded")
 	_check(tm.has_model(&"fighter"), "fighter ship model is loaded")
@@ -773,19 +773,19 @@ func _test_hex_line() -> void:
 
 func _test_terrain_los() -> void:
 	# Hill at an intermediate hex blocks LOS.
-	var hill := { Vector2i(0, -1): TerrainDef.Type.HILL }
+	var hill := { Vector2i(0, -1): &"hill" }
 	_check(not TerrainDef.los_clear(Vector2i(0, 0), Vector2i(0, -3), hill),
 			"hill at (0,-1) blocks LOS from (0,0) to (0,-3)")
 	# Hill at the target hex does NOT block — only intermediates count.
-	var hill_target := { Vector2i(0, -3): TerrainDef.Type.HILL }
+	var hill_target := { Vector2i(0, -3): &"hill" }
 	_check(TerrainDef.los_clear(Vector2i(0, 0), Vector2i(0, -3), hill_target),
 			"hill at the target hex does not block LOS (endpoint excluded)")
 	# Tower behaves like a hill.
-	var tower := { Vector2i(0, -1): TerrainDef.Type.TOWER }
+	var tower := { Vector2i(0, -1): &"tower" }
 	_check(not TerrainDef.los_clear(Vector2i(0, 0), Vector2i(0, -3), tower),
 			"ruined tower in the path blocks LOS")
 	# Dust storm does NOT block LOS (only imposes a spotting penalty).
-	var dust := { Vector2i(0, -1): TerrainDef.Type.DUST_STORM }
+	var dust := { Vector2i(0, -1): &"dust_storm" }
 	_check(TerrainDef.los_clear(Vector2i(0, 0), Vector2i(0, -3), dust),
 			"dust storm in the path does not block LOS")
 	# Empty terrain: LOS always clear.
@@ -795,19 +795,19 @@ func _test_terrain_los() -> void:
 
 func _test_terrain_dust() -> void:
 	# One dust hex at the intermediate → penalty 1.
-	var dust_mid := { Vector2i(0, -1): TerrainDef.Type.DUST_STORM }
+	var dust_mid := { Vector2i(0, -1): &"dust_storm" }
 	_check_eq(TerrainDef.dust_along(Vector2i(0, 0), Vector2i(0, -2), dust_mid), 1,
 			"dust at intermediate hex → penalty 1")
 	# Dust at the target hex also counts.
-	var dust_target := { Vector2i(0, -2): TerrainDef.Type.DUST_STORM }
+	var dust_target := { Vector2i(0, -2): &"dust_storm" }
 	_check_eq(TerrainDef.dust_along(Vector2i(0, 0), Vector2i(0, -2), dust_target), 1,
 			"dust at the target hex counts (penalty 1)")
 	# Dust at the firer's own hex is NOT counted.
-	var dust_firer := { Vector2i(0, 0): TerrainDef.Type.DUST_STORM }
+	var dust_firer := { Vector2i(0, 0): &"dust_storm" }
 	_check_eq(TerrainDef.dust_along(Vector2i(0, 0), Vector2i(0, -2), dust_firer), 0,
 			"dust at the firer's own hex is not counted")
 	# Hill along path contributes 0 penalty (blocks LOS but no dust penalty).
-	var hill := { Vector2i(0, -1): TerrainDef.Type.HILL }
+	var hill := { Vector2i(0, -1): &"hill" }
 	_check_eq(TerrainDef.dust_along(Vector2i(0, 0), Vector2i(0, -2), hill), 0,
 			"hill gives no dust penalty")
 
@@ -817,13 +817,13 @@ func _test_terrain_fire_preview() -> void:
 	scout.apply_allocation({ "guns": [0], "engine": 0, "damage_control": 0 })
 	# Turret at range 2 dead ahead bears (360° mount).
 	# Hill at the intermediate hex (0,-1) should report LOS blocked.
-	var hill_terrain := { Vector2i(0, -1): TerrainDef.Type.HILL }
+	var hill_terrain := { Vector2i(0, -1): &"hill" }
 	var pv_blocked := scout.fire_preview(0, Vector2i(0, -2), hill_terrain)
 	_check(not pv_blocked["bears"], "fire_preview: hill in path → does not bear")
 	_check_eq(pv_blocked["reason"], "LOS blocked",
 			"fire_preview reason is 'LOS blocked' with hill in path")
 	# Dust at the intermediate hex: shot bears but to-hit is raised by 1.
-	var dust_terrain := { Vector2i(0, -1): TerrainDef.Type.DUST_STORM }
+	var dust_terrain := { Vector2i(0, -1): &"dust_storm" }
 	var pv_dust := scout.fire_preview(0, Vector2i(0, -2), dust_terrain)
 	_check(pv_dust["bears"], "fire_preview: dust does not block the shot")
 	_check_eq(pv_dust["dust_penalty"], 1, "fire_preview reports dust_penalty 1")
@@ -1473,34 +1473,43 @@ func _test_catalog_mods() -> void:
 func _test_map_catalog_parity() -> void:
 	var cat := MapCatalog.new("res://__no_such_mod_dir__/")
 
-	# Terrain kinds vs the static TerrainDef they replace.
-	var enum_for := { &"hill": TerrainDef.Type.HILL, &"tower": TerrainDef.Type.TOWER,
-			&"dust_storm": TerrainDef.Type.DUST_STORM }
-	for kid in enum_for:
-		var t: int = enum_for[kid]
-		_check(cat.has_kind(kid), "terrain.json provides '%s'" % kid)
-		var k := cat.kind(kid)
-		_check_eq(k.blocks_los, TerrainDef.blocks_los(t), "%s blocks_los parity" % kid)
-		_check_eq(k.spot_penalty, TerrainDef.spot_penalty(t), "%s spot_penalty parity" % kid)
-		_check_eq(k.display_name, TerrainDef.display_name(t), "%s display_name parity" % kid)
-		_check(k.render_color().is_equal_approx(TerrainDef.render_color(t)),
-				"%s render_color parity" % kid)
-		_check(is_equal_approx(k.render_height(), TerrainDef.render_height(t)),
-				"%s render_height parity" % kid)
+	# Concrete core-kind values — these are exactly what the pre-catalog TerrainDef
+	# hard-coded, so this pins terrain.json to the original design.
+	_check(cat.kind(&"hill").blocks_los and cat.kind(&"tower").blocks_los,
+			"hill and tower block LOS")
+	_check(not cat.kind(&"dust_storm").blocks_los, "dust does not block LOS")
+	_check_eq(cat.kind(&"dust_storm").spot_penalty, 1, "dust imposes a +1 spotting penalty")
+	_check_eq(cat.kind(&"hill").spot_penalty, 0, "hill imposes no spotting penalty")
+	_check_eq(cat.kind(&"hill").display_name, "Hill", "hill display name")
+	_check_eq(cat.kind(&"dust_storm").display_name, "Dust", "dust display name")
+	_check(cat.kind(&"hill").render_color().is_equal_approx(Color(0.50, 0.35, 0.15, 0.80)),
+			"hill fill colour")
+	_check(is_equal_approx(cat.kind(&"tower").render_height(), 1.5), "tower massing height")
 	_check_eq(cat.kind(&"hill").render_type(), "model", "hill renders as a mesh")
 	_check_eq(cat.kind(&"dust_storm").render_type(), "sprite", "dust renders as a sprite")
 	_check_eq(cat.kind(&"tower").category, "building", "tower is categorised as a building")
+	_check(is_equal_approx(cat.kind(&"tower").render_footprint(), 0.42), "tower has a narrow footprint")
+	_check(is_equal_approx(cat.kind(&"hill").render_footprint(), 1.0), "hill fills its hex")
+
+	# The TerrainDef facade the engine/AI call now delegates to the catalog, and
+	# the empty-string sentinel resolves as "no terrain".
+	MapLibrary.reset_default()
+	_check(TerrainDef.blocks_los(&"hill") and not TerrainDef.blocks_los(&"dust_storm"),
+			"TerrainDef.blocks_los delegates to the catalog")
+	_check_eq(TerrainDef.spot_penalty(&"dust_storm"), 1, "TerrainDef.spot_penalty delegates")
+	_check(not TerrainDef.blocks_los(&""), "the empty sentinel is not terrain")
+	_check_eq(TerrainDef.spot_penalty(&""), 0, "the empty sentinel has no spotting penalty")
+	_check(TerrainDef.is_sprite(&"dust_storm") and not TerrainDef.is_sprite(&"hill"),
+			"TerrainDef.is_sprite reflects render type")
 
 	# Model span/anchor cross-checked against the live ModelBaker (real drift
-	# guard); frame/look_y against the authored literals (baker doesn't expose
-	# them — the full cross-check lands when ModelBaker goes catalog-driven, T5).
+	# guard, now keyed by kind id); frame/look_y/dir against the authored literals.
 	var mb := ModelBaker.new()
 	mb.scan_assets()
 	for kid in [&"hill", &"tower"]:
 		var mdl: Dictionary = cat.kind(kid).render["model"]
-		var t: int = enum_for[kid]
-		_check(is_equal_approx(mdl["span"], mb.span(t)), "%s model span matches ModelBaker" % kid)
-		_check(is_equal_approx(mdl["anchor"], mb.anchor(t)), "%s model anchor matches ModelBaker" % kid)
+		_check(is_equal_approx(mdl["span"], mb.span(kid)), "%s model span matches ModelBaker" % kid)
+		_check(is_equal_approx(mdl["anchor"], mb.anchor(kid)), "%s model anchor matches ModelBaker" % kid)
 	mb.free()
 	var hill_model: Dictionary = cat.kind(&"hill").render["model"]
 	_check_eq(hill_model["dir"], "terrain", "hill model dir")
@@ -1523,14 +1532,12 @@ func _test_map_catalog_parity() -> void:
 	_check_eq(m.deploy_min_separation, TurnEngine.DEPLOY_MIN_SEPARATION, "deploy_min_separation parity")
 	var eng := TurnEngine.new()
 	eng._place_terrain()
-	var want := eng.terrain            # Vector2i -> TerrainDef.Type (int)
+	var want := eng.terrain            # Vector2i -> StringName kind id
 	var got := m.terrain_map()         # Vector2i -> StringName kind id
 	_check_eq(got.size(), want.size(), "dead_sea_bottom cell count matches _place_terrain")
-	var id_for := { TerrainDef.Type.HILL: &"hill", TerrainDef.Type.TOWER: &"tower",
-			TerrainDef.Type.DUST_STORM: &"dust_storm" }
 	var cells_ok := true
 	for hex in want:
-		if got.get(hex, &"") != id_for[want[hex]]:
+		if got.get(hex, &"") != want[hex]:
 			cells_ok = false
 	_check(cells_ok, "every dead_sea_bottom cell matches _place_terrain hex+kind")
 

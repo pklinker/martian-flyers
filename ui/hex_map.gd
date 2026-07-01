@@ -625,12 +625,12 @@ func _draw() -> void:
 			var c := hex_to_pixel(hex)
 			if c.x < -cull or c.x > size.x + cull or c.y < -cull or c.y > size.y + cull:
 				continue
-			var t: int = engine.terrain[hex]
+			var t: StringName = engine.terrain[hex]
 			# Dust hexes backed by an authored sprite are drawn entirely by that sprite
 			# once the field tilts into iso — the flat ochre tint and "D" label would
 			# just show through beneath it, so suppress them here. Overhead (no sprite
 			# drawn) keeps the flat haze + label.
-			if t == TerrainDef.Type.DUST_STORM and iso_k > 0.02 \
+			if TerrainDef.is_sprite(t) and iso_k > 0.02 \
 					and _dust_sprites != null and _dust_sprites.has_sprites():
 				continue
 			var col := TerrainDef.render_color(t)
@@ -686,8 +686,8 @@ func _draw() -> void:
 	# does it rise into prisms/dust columns. Keeps overhead identical to the old map.
 	if iso_k > 0.02:
 		for hex: Vector2i in engine.terrain:
-			var t: int = engine.terrain[hex]
-			var kind := "dust" if t == TerrainDef.Type.DUST_STORM else "terrain"
+			var t: StringName = engine.terrain[hex]
+			var kind := "dust" if TerrainDef.is_sprite(t) else "terrain"
 			objs.append({"depth": _depth_of(HexMath.to_cartesian(hex)), "kind": kind,
 					"hex": hex, "type": t})
 	for s in engine.ships:
@@ -850,13 +850,13 @@ static func _facing_dir_deg(deg: float) -> Vector2:
 
 
 ## Footprint radius (hex units) of a terrain prism: hills fill the hex, towers are a
-## narrow column standing on the tile.
-func _terrain_radius(t: int) -> float:
-	return 0.42 if t == TerrainDef.Type.TOWER else 1.0
+## narrow column standing on the tile. Data-driven per kind (render.footprint).
+func _terrain_radius(t: StringName) -> float:
+	return TerrainDef.render_footprint(t)
 
 
 ## Deterministic model variant for a hex, so a given hill always looks the same.
-func _terrain_variant(hex: Vector2i, t: int) -> int:
+func _terrain_variant(hex: Vector2i, t: StringName) -> int:
 	var n := _baker.variant_count(t)
 	return posmod(hex.x * 7 + hex.y * 13, n) if n > 0 else 0
 
@@ -878,7 +878,7 @@ func _draw_feature_shadow(ring: PackedVector2Array, height: float, sh_k: float) 
 ## Draw a terrain feature using its authored 3D model when one exists, else the prism.
 ## The baked sprite is blitted at the hex with a soft ground shadow; if the needed angle
 ## isn't baked yet we request it and draw the prism this frame (it pops in on `baked`).
-func _draw_terrain_model(font: Font, hex: Vector2i, t: int) -> void:
+func _draw_terrain_model(font: Font, hex: Vector2i, t: StringName) -> void:
 	if _baker == null or not _baker.has_model(t):
 		_draw_terrain_prism(font, hex, t)
 		return
@@ -917,7 +917,7 @@ func _draw_terrain_model(font: Font, hex: Vector2i, t: int) -> void:
 ## Draw a terrain feature as an extruded prism: a cast ground shadow, the visible side
 ## walls shaded by their orientation to the sun (sorted back-to-front), then the lit top
 ## face. Reads as flat in overhead (height_scale 0 collapses the walls to nothing).
-func _draw_terrain_prism(font: Font, hex: Vector2i, t: int) -> void:
+func _draw_terrain_prism(font: Font, hex: Vector2i, t: StringName) -> void:
 	var base := HexMath.to_cartesian(hex)
 	var height := TerrainDef.render_height(t)
 	var rad := _terrain_radius(t)

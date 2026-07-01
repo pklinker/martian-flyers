@@ -28,6 +28,7 @@
 			"render": {
 				"color": [0.42, 0.42, 0.42, 0.88],
 				"height": 1.5,
+				"footprint": 0.42,
 				"model": {
 					"dir": "buildings",
 					"prefix": "tower",
