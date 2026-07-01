@@ -655,10 +655,10 @@ Synthesized from this review's findings. Each derives from a specific finding.
   - Surfaced by: Step 0 scope / §0.1 — three parallel catalog stacks
   - Files: `src/rules/catalog_loader.gd` (new), `ship_catalog.gd` (refactor), `map_catalog.gd` (new), `map_library.gd` (new), `map_def.gd` (new)
   - Verify: ship parity test still green; `MapCatalog` layering test passes
-- [ ] **T3 (P1, human: ~1d / CC: ~1h)** — src/rules+ui — enum→string-id (one commit, §0.15)
+- [x] **T3 (P1, human: ~1d / CC: ~1h)** — src/rules+ui — enum→string-id ✅ **DONE (`ed36dce`)**
   - Surfaced by: §0.8 / Outside voice #4 — sentinel + hot-path callers
-  - Files: `terrain_def.gd`, `damage_resolver.gd`, `ship_state.gd`, `ship_ai.gd`, `ui/hex_map.gd`, `ui/model_baker.gd`, `ui/dust_sprites.gd`
-  - Verify: converted `_test_terrain_*` regression tests assert identical outcomes
+  - Files: `terrain_def.gd` (→ catalog facade), `turn_engine.gd`, `ui/hex_map.gd`, `ui/model_baker.gd`, `ui/map_demo.gd`, `terrain_kind_def.gd`, `data/terrain.json`, `tests/test_rules.gd`
+  - Result: `terrain{}` now `Vector2i → StringName`; `TerrainDef` is a static facade over `MapLibrary.kind`; `ModelBaker` catalog-driven (keyed by id, source_root paths); `hex_map` branches on `is_sprite()` render-type, not a dust id; `render.footprint` data-drives the prism radius. `damage_resolver`/`ship_state`/`ship_ai` needed **no change** (they call `TerrainDef.los_clear/dust_along`, signatures unchanged). `_test_terrain_los/dust/fire` converted to string ids assert identical outcomes; suite **495/0**; `map_demo` boots and renders hills/tower/dust identically in overhead **and** isometric (3D bake + dust sprites verified visually). `DustSprites` per-kind sprite sheets + mod glb loading remain T5.
 - [ ] **T4 (P1, human: ~3h / CC: ~20min)** — src/rules — referential integrity + `apply_map`
   - Surfaced by: Issue 1 / §0.2 — unknown-kind cell handling
   - Files: `map_catalog.gd`, `turn_engine.gd` (`apply_map`, `DEFAULT_` consts §0.7)
