@@ -63,38 +63,36 @@ func gun_ids() -> Array[StringName]:
 # --- Loading ----------------------------------------------------------------
 
 func _load_guns(path: String, source: String) -> void:
-	var data: Variant = _read_json(path)
+	var data: Variant = CatalogLoader.read_json(path)
 	if data == null:
 		return
 	for d in (data as Dictionary).get("guns", []):
 		var err := _validate_gun(d)
 		if err != "":
-			_reject(source, "gun", d, err)
+			CatalogLoader.reject("ShipCatalog", source, "gun", d, err)
 			continue
 		var g := GunDef.from_dict(d)
 		_guns[g.id] = g       # add, or override keeping slot
 
 func _load_ships(path: String, source: String) -> void:
-	var data: Variant = _read_json(path)
+	var data: Variant = CatalogLoader.read_json(path)
 	if data == null:
 		return
 	for d in (data as Dictionary).get("ships", []):
 		var err := _validate_ship(d)
 		if err != "":
-			_reject(source, "ship", d, err)
+			CatalogLoader.reject("ShipCatalog", source, "ship", d, err)
 			continue
 		var s := ShipDef.from_dict(d)
 		_ships[s.id] = s
 
 ## Scan a mods folder: each subfolder is a pack that may carry guns.json and/or
-## ships.json. Alphabetical order makes the merge deterministic.
+## ships.json. Alphabetical order (via CatalogLoader.mod_packs) makes the merge
+## deterministic.
 func _scan_mods(mod_dir: String) -> void:
-	if not DirAccess.dir_exists_absolute(mod_dir):
-		return
-	var packs := DirAccess.get_directories_at(mod_dir)
-	packs.sort()
-	for pack in packs:
-		var base := mod_dir.path_join(pack)
+	for p in CatalogLoader.mod_packs(mod_dir):
+		var base: String = p["base"]
+		var pack: String = p["pack"]
 		if FileAccess.file_exists(base.path_join("guns.json")):
 			_load_guns(base.path_join("guns.json"), "mod:" + pack)
 		if FileAccess.file_exists(base.path_join("ships.json")):
@@ -184,25 +182,5 @@ func _drop_ships_with_unknown_guns() -> void:
 				_ships.erase(sid)
 				break
 
-## A rejected entry: loud, contextual, and skipped. Core rejections are a
-## shipped-asset bug (the parity/shipped-data tests guard them at dev time); mod
-## rejections drop just that entry and leave core intact.
-func _reject(source: String, kind: String, d: Variant, err: String) -> void:
-	var id_str := "?"
-	if typeof(d) == TYPE_DICTIONARY and (d as Dictionary).has("id"):
-		id_str = String(d["id"])
-	push_error("ShipCatalog[%s]: skipped %s '%s' — %s" % [source, kind, id_str, err])
-
-
-## Parse a JSON object file. Returns the Dictionary, or null on a missing file
-## or parse error (logged). A missing core file is a packaging bug; a missing
-## mod file just means that pack has no guns or no ships.
-static func _read_json(path: String) -> Variant:
-	if not FileAccess.file_exists(path):
-		return null
-	var text := FileAccess.get_file_as_string(path)
-	var parsed: Variant = JSON.parse_string(text)
-	if typeof(parsed) != TYPE_DICTIONARY:
-		push_error("ShipCatalog: %s is not a JSON object" % path)
-		return null
-	return parsed
+# Rejection logging and JSON reading now live in the shared CatalogLoader
+# (CatalogLoader.reject / .read_json), used by both ShipCatalog and MapCatalog.

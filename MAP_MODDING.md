@@ -83,29 +83,46 @@ differ; the body is kept for rationale.
    walks the flat `terrain` dict's values (no ship-style nested structure to hang
    off). Parity/round-trip tests move from int assertions to id assertions.
 10. **Schema kept in sync by a golden fixture.** A committed example pack
-    (`maps.json` + `terrain.json`) is asserted by the flyers GDScript suite (must
-    parse every field) **and** by a 3d-gen test (serializer reproduces it).
-    Adding a field reddens both suites until both sides handle it.
+	(`maps.json` + `terrain.json`) is asserted by the flyers GDScript suite (must
+	parse every field) **and** by a 3d-gen test (serializer reproduces it).
+	Adding a field reddens both suites until both sides handle it.
 11. **3d-gen gets Vitest.** No test framework exists there today. Add Vitest
-    (Vite-native) to cover the `MapDoc→maps.json` serializer, the golden-fixture
-    round-trip, and the merge endpoint's upsert-by-id (add / replace / create /
+	(Vite-native) to cover the `MapDoc→maps.json` serializer, the golden-fixture
+	round-trip, and the merge endpoint's upsert-by-id (add / replace / create /
     preserve-others) — the catalog-corrupting logic.
 12. **Editor grid: merged geometry + InstancedMesh.** The 48×48 painter draws all
     hex outlines as one merged `LineSegments` (single draw call) and painted cells
     as one `THREE.InstancedMesh` per kind — O(kinds) draw calls, not O(cells).
 13. **Render tuning is authored against the mesh (desync guard).** `frame`/`span`/
-    `look_y`/`anchor` are tuned to a specific glb. They are authored in 3d-gen's
-    live 3D-iso preview (WYSIWYG against the actual mesh) and pack export bundles
-    the mesh + its tuning together, so re-exporting a different mesh re-tunes in
-    the same session. Core-only parity tests cannot catch mod-content desync — the
-    WYSIWYG authoring is the mitigation.
+	`look_y`/`anchor` are tuned to a specific glb. They are authored in 3d-gen's
+	live 3D-iso preview (WYSIWYG against the actual mesh) and pack export bundles
+	the mesh + its tuning together, so re-exporting a different mesh re-tunes in
+	the same session. Core-only parity tests cannot catch mod-content desync — the
+	WYSIWYG authoring is the mitigation.
 14. **Painter stays in v1** (3D iso), accepted as the largest workstream.
 15. **One indivisible commit.** The enum→string-id change, all switch sites
-    (`damage_resolver`, `ship_state`, `ship_ai`, both `hex_map` passes),
-    `ModelBaker`/`DustSprites` catalog-drive, and the parity test land **together**
-    — the clean seams §8 implies between those steps do not exist.
+	(`damage_resolver`, `ship_state`, `ship_ai`, both `hex_map` passes),
+	`ModelBaker`/`DustSprites` catalog-drive, and the parity test land **together**
+	— the clean seams §8 implies between those steps do not exist.
 16. **Landing order gains a step 0: the glb-runtime spike** (decision 4), before
-    any modder-asset work.
+	any modder-asset work.
+
+### T2 as-built (2026-07-01) — schema pinned
+
+The foundation (shared `CatalogLoader`, one `MapCatalog` loading `terrain.json` +
+`maps.json`, `MapLibrary`, and the core data files) landed additively — the
+running engine still uses the int-enum `TerrainDef`; a parity test asserts the
+three core kinds reproduce today's `TerrainDef` + `ModelBaker`/`DustSprites`
+values, and `dead_sea_bottom` reproduces `_place_terrain()`. Two schema details
+were pinned during implementation, superseding the sketches in §4.1/§5.1:
+
+- **Kind ids are lowercase snake_case** (`hill`, `tower`, `dust_storm`), not the
+  `HILL` shown in the §4.1 example.
+- **`render.color` is an `[r,g,b,a]` float array**, not the `#RRGGBBAA` hex in
+  §5.1 — floats round-trip exactly so parity is `==` with no 8-bit tolerance.
+- **Unknown-kind maps are dropped whole**, not per-cell (resolves §0.2's
+  ambiguity): a map silently missing a terrain feature has shifted LOS lanes, so
+  withholding it beats offering a subtly-wrong field. Matches the ship precedent.
 
 ---
 
@@ -230,22 +247,22 @@ and just adopt string ids. Confirm at review (§9).
 ```json
 {
   "maps": [
-    {
-      "id": "dead_sea_bottom",
-      "display_name": "Dead Sea Bottom",
-      "cols": 48,
-      "rows": 48,
-      "deploy_zone_cols": 24,
-      "deploy_min_separation": 10,
-      "terrain": [
-        { "hex": [25, 7], "type": "HILL" },
-        { "hex": [26, 7], "type": "HILL" },
-        { "hex": [27, 5], "type": "TOWER" },
-        { "hex": [28, 8], "type": "DUST_STORM" },
-        { "hex": [29, 8], "type": "DUST_STORM" },
-        { "hex": [29, 7], "type": "DUST_STORM" }
-      ]
-    }
+	{
+	  "id": "dead_sea_bottom",
+	  "display_name": "Dead Sea Bottom",
+	  "cols": 48,
+	  "rows": 48,
+	  "deploy_zone_cols": 24,
+	  "deploy_min_separation": 10,
+	  "terrain": [
+		{ "hex": [25, 7], "type": "HILL" },
+		{ "hex": [26, 7], "type": "HILL" },
+		{ "hex": [27, 5], "type": "TOWER" },
+		{ "hex": [28, 8], "type": "DUST_STORM" },
+		{ "hex": [29, 8], "type": "DUST_STORM" },
+		{ "hex": [29, 7], "type": "DUST_STORM" }
+	  ]
+	}
   ]
 }
 ```
@@ -314,26 +331,26 @@ the start.
 {
   "terrain": [
     {
-      "id": "hill",
-      "display_name": "Hill",
-      "blocks_los": true,
-      "spot_penalty": 0,
-      "render": {
-        "color": "#805926cc", "height": 0.55,
-        "model": { "dir": "terrain", "prefix": "hill",
-                   "frame": 2.2, "span": 2.0, "look_y": 0.3, "anchor": 0.58 }
+	  "id": "hill",
+	  "display_name": "Hill",
+	  "blocks_los": true,
+	  "spot_penalty": 0,
+	  "render": {
+		"color": "#805926cc", "height": 0.55,
+		"model": { "dir": "terrain", "prefix": "hill",
+				   "frame": 2.2, "span": 2.0, "look_y": 0.3, "anchor": 0.58 }
       }
     },
     {
-      "id": "tower", "display_name": "Tower", "blocks_los": true, "spot_penalty": 0,
-      "render": { "color": "#6b6b6be0", "height": 1.5,
-        "model": { "dir": "buildings", "prefix": "tower",
-                   "frame": 2.0, "span": 1.1, "look_y": 0.7, "anchor": 0.72 } }
+	  "id": "tower", "display_name": "Tower", "blocks_los": true, "spot_penalty": 0,
+	  "render": { "color": "#6b6b6be0", "height": 1.5,
+		"model": { "dir": "buildings", "prefix": "tower",
+				   "frame": 2.0, "span": 1.1, "look_y": 0.7, "anchor": 0.72 } }
     },
     {
-      "id": "dust_storm", "display_name": "Dust", "blocks_los": false, "spot_penalty": 1,
-      "render": { "color": "#d9b847_6b", "height": 0.0,
-        "sprite": { "prefix": "duststorm", "span": 1.8, "anchor": 0.62 } }
+	  "id": "dust_storm", "display_name": "Dust", "blocks_los": false, "spot_penalty": 1,
+	  "render": { "color": "#d9b847_6b", "height": 0.0,
+		"sprite": { "prefix": "duststorm", "span": 1.8, "anchor": 0.62 } }
     }
   ]
 }
@@ -631,9 +648,9 @@ Synthesized from this review's findings. Each derives from a specific finding.
   - Result: 10/10 checks — negative control confirmed (`ResourceLoader` refuses a
     sidecar-less `user://` glb), `GLTFDocument.append_from_file` + `generate_scene`
     loads it into a `Node3D` with real geometry (hill AABB 1.79×0.55×1.80), and
-    `PackedScene.pack()` wraps the result — so `ModelBaker`'s `Array[PackedScene]`
-    contract needs **zero type change** for mod kinds (only the construction path
-    differs). Note: `pack()` requires setting `owner` on descendants first.
+	`PackedScene.pack()` wraps the result — so `ModelBaker`'s `Array[PackedScene]`
+	contract needs **zero type change** for mod kinds (only the construction path
+	differs). Note: `pack()` requires setting `owner` on descendants first.
 - [ ] **T2 (P1, human: ~1d / CC: ~1h)** — src/rules — shared `CatalogLoader` + `MapCatalog`
   - Surfaced by: Step 0 scope / §0.1 — three parallel catalog stacks
   - Files: `src/rules/catalog_loader.gd` (new), `ship_catalog.gd` (refactor), `map_catalog.gd` (new), `map_library.gd` (new), `map_def.gd` (new)

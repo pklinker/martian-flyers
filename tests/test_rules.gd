@@ -81,6 +81,12 @@ func _init() -> void:
 	_test_catalog_validation()
 	_test_catalog_mods()
 	_test_save_missing_dependency()
+
+	_suite("Map catalog")
+	_test_map_catalog_parity()
+	_test_map_catalog_layering()
+	_test_map_catalog_referential_integrity()
+	_test_map_catalog_roundtrip()
 	_test_deployment_rules()
 	_test_side_victory()
 	_test_fleet_cadence()
@@ -1453,6 +1459,173 @@ func _test_catalog_mods() -> void:
 			same = false
 	_check(same, "two loads of the same mod set yield identical ship order")
 	_purge_dir(TEST_MOD_ROOT)
+
+
+# ---------------------------------------------------------------------------
+# Map / terrain catalog (MAP_MODDING.md T2). The catalog is purely additive in
+# this pass — the running engine still uses the int-enum TerrainDef — so these
+# tests exercise the new classes directly. The parity test is the bridge that
+# lets T3 swap TerrainDef for the catalog with provably zero behaviour drift.
+# ---------------------------------------------------------------------------
+
+## The bundled terrain.json + maps.json reproduce today's hard-coded TerrainDef
+## rules, ModelBaker/DustSprites tuning, and _place_terrain() layout EXACTLY.
+func _test_map_catalog_parity() -> void:
+	var cat := MapCatalog.new("res://__no_such_mod_dir__/")
+
+	# Terrain kinds vs the static TerrainDef they replace.
+	var enum_for := { &"hill": TerrainDef.Type.HILL, &"tower": TerrainDef.Type.TOWER,
+			&"dust_storm": TerrainDef.Type.DUST_STORM }
+	for kid in enum_for:
+		var t: int = enum_for[kid]
+		_check(cat.has_kind(kid), "terrain.json provides '%s'" % kid)
+		var k := cat.kind(kid)
+		_check_eq(k.blocks_los, TerrainDef.blocks_los(t), "%s blocks_los parity" % kid)
+		_check_eq(k.spot_penalty, TerrainDef.spot_penalty(t), "%s spot_penalty parity" % kid)
+		_check_eq(k.display_name, TerrainDef.display_name(t), "%s display_name parity" % kid)
+		_check(k.render_color().is_equal_approx(TerrainDef.render_color(t)),
+				"%s render_color parity" % kid)
+		_check(is_equal_approx(k.render_height(), TerrainDef.render_height(t)),
+				"%s render_height parity" % kid)
+	_check_eq(cat.kind(&"hill").render_type(), "model", "hill renders as a mesh")
+	_check_eq(cat.kind(&"dust_storm").render_type(), "sprite", "dust renders as a sprite")
+	_check_eq(cat.kind(&"tower").category, "building", "tower is categorised as a building")
+
+	# Model span/anchor cross-checked against the live ModelBaker (real drift
+	# guard); frame/look_y against the authored literals (baker doesn't expose
+	# them — the full cross-check lands when ModelBaker goes catalog-driven, T5).
+	var mb := ModelBaker.new()
+	mb.scan_assets()
+	for kid in [&"hill", &"tower"]:
+		var mdl: Dictionary = cat.kind(kid).render["model"]
+		var t: int = enum_for[kid]
+		_check(is_equal_approx(mdl["span"], mb.span(t)), "%s model span matches ModelBaker" % kid)
+		_check(is_equal_approx(mdl["anchor"], mb.anchor(t)), "%s model anchor matches ModelBaker" % kid)
+	mb.free()
+	var hill_model: Dictionary = cat.kind(&"hill").render["model"]
+	_check_eq(hill_model["dir"], "terrain", "hill model dir")
+	_check(is_equal_approx(hill_model["frame"], 2.2), "hill model frame literal")
+	_check(is_equal_approx(hill_model["look_y"], 0.3), "hill model look_y literal")
+	# Dust sprite tuning mirrors DustSprites' constants.
+	var dust_sprite: Dictionary = cat.kind(&"dust_storm").render["sprite"]
+	_check_eq(dust_sprite["prefix"], "duststorm", "dust sprite prefix")
+	_check(is_equal_approx(dust_sprite["span"], DustSprites.FRAME_SPAN_UNITS),
+			"dust sprite span matches DustSprites")
+	_check(is_equal_approx(dust_sprite["anchor"], DustSprites.GROUND_ANCHOR),
+			"dust sprite anchor matches DustSprites")
+
+	# dead_sea_bottom reproduces the map-size/deploy consts and _place_terrain().
+	_check(cat.has_map(&"dead_sea_bottom"), "maps.json provides dead_sea_bottom")
+	var m := cat.map(&"dead_sea_bottom")
+	_check_eq(m.cols, 48, "map cols parity")
+	_check_eq(m.rows, 48, "map rows parity")
+	_check_eq(m.deploy_zone_cols, TurnEngine.DEPLOY_ZONE_COLS, "deploy_zone_cols parity")
+	_check_eq(m.deploy_min_separation, TurnEngine.DEPLOY_MIN_SEPARATION, "deploy_min_separation parity")
+	var eng := TurnEngine.new()
+	eng._place_terrain()
+	var want := eng.terrain            # Vector2i -> TerrainDef.Type (int)
+	var got := m.terrain_map()         # Vector2i -> StringName kind id
+	_check_eq(got.size(), want.size(), "dead_sea_bottom cell count matches _place_terrain")
+	var id_for := { TerrainDef.Type.HILL: &"hill", TerrainDef.Type.TOWER: &"tower",
+			TerrainDef.Type.DUST_STORM: &"dust_storm" }
+	var cells_ok := true
+	for hex in want:
+		if got.get(hex, &"") != id_for[want[hex]]:
+			cells_ok = false
+	_check(cells_ok, "every dead_sea_bottom cell matches _place_terrain hex+kind")
+
+
+## Mods layer over core: add a kind + a map, override a core kind in place, and
+## resolve asset origin per pack. Deterministic order across loads.
+func _test_map_catalog_layering() -> void:
+	_purge_dir(TEST_MOD_ROOT)
+	var core := MapCatalog.new("res://__no_such_mod_dir__/")
+	var core_kinds := core.kind_ids().size()
+	var core_maps := core.map_ids().size()
+
+	_write_json(TEST_MOD_ROOT + "/a_add/terrain.json", { "terrain": [
+		{ "id": "crystal", "display_name": "Crystal Spire", "blocks_los": true } ] })
+	_write_json(TEST_MOD_ROOT + "/a_add/maps.json", { "maps": [
+		{ "id": "crystal_flats", "display_name": "Crystal Flats", "cols": 30, "rows": 30,
+			"terrain": [ { "hex": [5, 5], "type": "crystal" }, { "hex": [6, 5], "type": "hill" } ] } ] })
+	# Override a core kind (dust penalty way up) keeping its slot.
+	_write_json(TEST_MOD_ROOT + "/b_override/terrain.json", { "terrain": [
+		{ "id": "dust_storm", "display_name": "Dust", "blocks_los": false, "spot_penalty": 5 } ] })
+
+	var cat := MapCatalog.new(TEST_MOD_ROOT + "/")
+	_check(cat.has_kind(&"crystal"), "mod-added terrain kind is present")
+	_check(cat.kind(&"crystal").blocks_los, "mod kind keeps its authored rules")
+	_check_eq(cat.kind_ids().size(), core_kinds + 1, "mod adds exactly one kind")
+	_check(cat.has_map(&"crystal_flats"), "mod map loads (its kinds resolve across packs)")
+	_check_eq(cat.map_ids().size(), core_maps + 1, "mod adds exactly one map")
+	_check_eq(cat.kind(&"dust_storm").spot_penalty, 5, "mod override retunes dust in place")
+	_check_eq(cat.kind_ids().find(&"dust_storm"), core.kind_ids().find(&"dust_storm"),
+			"overridden kind keeps its original ordering slot")
+	# Asset origin travels with the kind (§0.3): mod → pack root, core → res://.
+	_check_eq(cat.kind(&"crystal").source_root, TEST_MOD_ROOT + "/a_add/",
+			"mod kind carries its pack root for asset resolution")
+	_check_eq(cat.kind(&"hill").source_root, "res://", "core kind resolves against res://")
+	var a := MapCatalog.new(TEST_MOD_ROOT + "/").map_ids()
+	var b := MapCatalog.new(TEST_MOD_ROOT + "/").map_ids()
+	var same := a.size() == b.size()
+	for i in a.size():
+		if a[i] != b[i]:
+			same = false
+	_check(same, "two loads of the same mod set yield identical map order")
+	_purge_dir(TEST_MOD_ROOT)
+
+
+## A map referencing an unknown kind is dropped WHOLE (its LOS layout would be
+## silently wrong); malformed entries are rejected at validation. Core survives
+## every bad mod. (ERROR lines below are EXPECTED — these deliberately fail.)
+func _test_map_catalog_referential_integrity() -> void:
+	_purge_dir(TEST_MOD_ROOT)
+	_write_json(TEST_MOD_ROOT + "/z_bad/maps.json", { "maps": [
+		{ "id": "ghost_field", "display_name": "Ghost", "cols": 20, "rows": 20,
+			"terrain": [ { "hex": [1, 1], "type": "hill" },
+				{ "hex": [2, 2], "type": "no_such_kind" } ] },
+		{ "id": "good_field", "display_name": "Good", "cols": 20, "rows": 20,
+			"terrain": [ { "hex": [3, 3], "type": "hill" } ] } ] })
+	var cat := MapCatalog.new(TEST_MOD_ROOT + "/")
+	_check(not cat.has_map(&"ghost_field"), "map citing an unknown kind is dropped whole")
+	_check(cat.has_map(&"good_field"), "a valid map in the same pack survives")
+	_check(cat.has_map(&"dead_sea_bottom"), "core maps intact despite a bad mod map")
+	_purge_dir(TEST_MOD_ROOT)
+
+	_write_json(TEST_MOD_ROOT + "/z_bad2/maps.json", { "maps": [
+		{ "id": "no_rows", "display_name": "x", "cols": 10, "terrain": [] } ] })
+	_check(not MapCatalog.new(TEST_MOD_ROOT + "/").has_map(&"no_rows"),
+			"map missing 'rows' is rejected at validation")
+	_purge_dir(TEST_MOD_ROOT)
+
+	_write_json(TEST_MOD_ROOT + "/z_bad3/terrain.json", { "terrain": [ { "id": "nameless" } ] })
+	var cat3 := MapCatalog.new(TEST_MOD_ROOT + "/")
+	_check(not cat3.has_kind(&"nameless"), "kind missing display_name is rejected")
+	_check(cat3.has_kind(&"hill"), "core kinds intact despite a malformed mod kind")
+	_purge_dir(TEST_MOD_ROOT)
+
+
+## Every core kind and map survives serialization, and the facade reads the same
+## catalog (mirrors _test_catalog_migration for ships).
+func _test_map_catalog_roundtrip() -> void:
+	var cat := MapCatalog.new("res://__no_such_mod_dir__/")
+	var kinds_ok := true
+	for kid in cat.kind_ids():
+		var k := cat.kind(kid)
+		if JSON.stringify(TerrainKindDef.from_dict(k.to_dict()).to_dict()) != JSON.stringify(k.to_dict()):
+			kinds_ok = false
+	_check(kinds_ok, "every core terrain kind survives a to_dict→from_dict round-trip")
+	var maps_ok := true
+	for mid in cat.map_ids():
+		var mm := cat.map(mid)
+		if JSON.stringify(MapDef.from_dict(mm.to_dict()).to_dict()) != JSON.stringify(mm.to_dict()):
+			maps_ok = false
+	_check(maps_ok, "every core map survives a to_dict→from_dict round-trip")
+	MapLibrary.reset_default()
+	_check_eq(MapLibrary.map(&"dead_sea_bottom").display_name, "Dead Sea Bottom",
+			"MapLibrary facade resolves a map through the active catalog")
+	_check_eq(MapLibrary.kind(&"hill").display_name, "Hill",
+			"MapLibrary facade resolves a terrain kind")
 
 
 ## Step 5 (save hardening): a save naming a ship the active catalog no longer
