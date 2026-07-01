@@ -82,6 +82,13 @@ differ; the body is kept for rationale.
    existing `var_to_str` (StringName round-trips); the missing-dependency guard
    walks the flat `terrain` dict's values (no ship-style nested structure to hang
    off). Parity/round-trip tests move from int assertions to id assertions.
+   **CORRECTION (T3, `70fe293`): a migration WAS needed.** Decision 3's "no saves
+   in the wild → skip the int→id remap" was wrong — the per-phase **resume
+   autosave** (`user://resume.flyersave`) is a save, and restoring its int
+   terrain crashed the string-id facade (`spot_penalty(0)`). `dict_to_engine` now
+   upgrades legacy int terrain on load (`LEGACY_TERRAIN_IDS`, version-agnostic).
+   The still-pending T6 work is the *unknown-kind* dependency guard (declining a
+   save that names a kind no catalog provides), separate from this int migration.
 10. **Schema kept in sync by a golden fixture.** A committed example pack
 	(`maps.json` + `terrain.json`) is asserted by the flyers GDScript suite (must
 	parse every field) **and** by a 3d-gen test (serializer reproduces it).
