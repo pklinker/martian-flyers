@@ -48,6 +48,11 @@ differ; the body is kept for rationale.
    for core kinds and uses the `GLTFDocument` path for mod kinds. The data-driven
    maps/kinds work (§4/§5) does **not** block on this spike. Corrects §5.4's
    "just extend the dir list."
+   **→ SPIKE PASSED (2026-07-01):** [`tests/spike_runtime_glb.gd`](tests/spike_runtime_glb.gd),
+   10/10 checks headless on Godot 4.6. The `GLTFDocument` path works, the loaded
+   scene packs into a `PackedScene` (baker contract unchanged — set `owner` on
+   descendants before `pack()`), and the negative control confirms the original
+   finding. Mod glb terrain/buildings are **viable as designed**; T1 done.
 5. **Pack export is its own path, not a retarget of the dev save.** The
    dev-server `/api/save` writes into the author's source checkout
    (`DEFAULT_GAME_DIR`, disabled in production) — useless to a real modder on a
@@ -620,10 +625,15 @@ mod-asset story, not the data layer.
 ## 14. Implementation Tasks
 Synthesized from this review's findings. Each derives from a specific finding.
 
-- [ ] **T1 (P1, human: ~3h / CC: ~30min)** — model_baker — glb-runtime spike
+- [x] **T1 (P1, human: ~3h / CC: ~30min)** — model_baker — glb-runtime spike ✅ **PASSED 2026-07-01**
   - Surfaced by: Outside voice #1 / §0.4 — `load()` can't read a `user://` glb
-  - Files: `ui/model_baker.gd` (probe), a throwaway `user://` test glb
-  - Verify: `GLTFDocument` loads it into a `Node3D`; mount + bake succeeds
+  - Files: [`tests/spike_runtime_glb.gd`](tests/spike_runtime_glb.gd) (kept as a regression guard)
+  - Result: 10/10 checks — negative control confirmed (`ResourceLoader` refuses a
+    sidecar-less `user://` glb), `GLTFDocument.append_from_file` + `generate_scene`
+    loads it into a `Node3D` with real geometry (hill AABB 1.79×0.55×1.80), and
+    `PackedScene.pack()` wraps the result — so `ModelBaker`'s `Array[PackedScene]`
+    contract needs **zero type change** for mod kinds (only the construction path
+    differs). Note: `pack()` requires setting `owner` on descendants first.
 - [ ] **T2 (P1, human: ~1d / CC: ~1h)** — src/rules — shared `CatalogLoader` + `MapCatalog`
   - Surfaced by: Step 0 scope / §0.1 — three parallel catalog stacks
   - Files: `src/rules/catalog_loader.gd` (new), `ship_catalog.gd` (refactor), `map_catalog.gd` (new), `map_library.gd` (new), `map_def.gd` (new)
