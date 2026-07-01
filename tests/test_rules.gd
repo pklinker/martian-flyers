@@ -112,6 +112,7 @@ func _init() -> void:
 	_test_save_roundtrip()
 	_test_save_rng_determinism()
 	_test_save_file_and_rejects()
+	_test_save_legacy_terrain_migration()
 
 	_suite("View projection")
 	_test_view_projection()
@@ -2141,6 +2142,34 @@ func _play_out_brains(engine: TurnEngine, brains: Array) -> Dictionary:
 # Save / load: serialize the engine (ships + RNG + turn/phase + queues) and
 # restore it exactly — the persistence layer is pure rules, headless-testable.
 # ---------------------------------------------------------------------------
+
+## Regression (T3): a pre-migration save stored terrain as the old int enum
+## (0=hill, 1=tower, 2=dust_storm). Loading one must upgrade those ints to string
+## kind ids so the resume autosave survives — otherwise an int reaches the
+## string-id TerrainDef facade and crashes (the _has_dust bug). Post-T3 saves
+## (string terrain) round-trip unchanged.
+func _test_save_legacy_terrain_migration() -> void:
+	var eng := TurnEngine.new()
+	eng.setup(1)                                   # real ships so _missing_dependency passes
+	var legacy := SaveGame.engine_to_dict(eng)
+	legacy["terrain"] = { Vector2i(1, 1): 0, Vector2i(2, 2): 1, Vector2i(3, 3): 2 }
+	var restored := SaveGame.dict_to_engine(legacy)
+	_check(restored != null, "a legacy int-terrain save still loads")
+	_check_eq(restored.terrain[Vector2i(1, 1)], &"hill", "legacy terrain 0 → hill")
+	_check_eq(restored.terrain[Vector2i(2, 2)], &"tower", "legacy terrain 1 → tower")
+	_check_eq(restored.terrain[Vector2i(3, 3)], &"dust_storm", "legacy terrain 2 → dust_storm")
+	# The migrated ids drive the rules with no int→StringName crash (the bug).
+	_check_eq(TerrainDef.spot_penalty(restored.terrain[Vector2i(3, 3)]), 1,
+			"migrated dust still imposes a spotting penalty (no crash)")
+	# An unrecognised legacy int degrades to 'no terrain', never a crash.
+	var junk := SaveGame.engine_to_dict(eng)
+	junk["terrain"] = { Vector2i(4, 4): 99 }
+	_check_eq(SaveGame.dict_to_engine(junk).terrain[Vector2i(4, 4)], TerrainDef.NONE,
+			"an unknown legacy terrain int becomes the empty sentinel")
+	# A post-T3 save (string terrain from _place_terrain) round-trips unchanged.
+	var modern := SaveGame.dict_to_engine(SaveGame.engine_to_dict(eng))
+	_check_eq(modern.terrain, eng.terrain, "post-T3 string terrain round-trips unchanged")
+
 
 func _test_save_roundtrip() -> void:
 	# Build an engine, then rough up the state so every serialized field carries

@@ -19,6 +19,14 @@ extends RefCounted
 ## Bump when the serialized shape changes incompatibly; load rejects unknown.
 const SAVE_VERSION := 1
 
+## Pre-T3 saves stored terrain as the old TerrainDef.Type int enum. Terrain is
+## now keyed by a string kind id (MAP_MODDING.md §5), so a save's legacy int
+## values are upgraded on load — an in-progress battle (the resume autosave)
+## survives the migration. This is version-agnostic on purpose: a string value
+## (a post-T3 save, or the clone() round-trip) passes through untouched, so no
+## SAVE_VERSION bump is needed and old + new saves both load.
+const LEGACY_TERRAIN_IDS := { 0: &"hill", 1: &"tower", 2: &"dust_storm" }
+
 ## Reason the last load returned null (unrecognised version, or a ship/gun the
 ## current catalog no longer provides — a removed mod). The UI surfaces it so the
 ## player learns "this save needs mod X" instead of a silent "no save".
@@ -112,6 +120,20 @@ static func engine_to_dict(engine: TurnEngine) -> Dictionary:
 	}
 
 
+## Rebuild the terrain map from a save, upgrading legacy int-enum values to
+## string kind ids (see LEGACY_TERRAIN_IDS). An unrecognised legacy int becomes
+## the empty sentinel (no terrain) rather than crashing; string values are kept.
+static func _restore_terrain(raw: Dictionary) -> Dictionary:
+	var out: Dictionary = {}
+	for hex in raw:
+		var v: Variant = raw[hex]
+		if typeof(v) == TYPE_INT or typeof(v) == TYPE_FLOAT:
+			out[hex] = LEGACY_TERRAIN_IDS.get(int(v), TerrainDef.NONE)
+		else:
+			out[hex] = StringName(v)
+	return out
+
+
 static func dict_to_engine(data: Dictionary) -> TurnEngine:
 	load_error = ""
 	if int(data.get("version", 0)) != SAVE_VERSION:
@@ -134,7 +156,7 @@ static func dict_to_engine(data: Dictionary) -> TurnEngine:
 	engine.current_impulse = int(data.get("current_impulse", 0))
 	engine.rng.seed = int(data.get("rng_seed", 0))
 	engine.rng.state = int(data.get("rng_state", 0))
-	engine.terrain = (data.get("terrain", {}) as Dictionary).duplicate()
+	engine.terrain = _restore_terrain(data.get("terrain", {}) as Dictionary)
 
 	var restored: Array[ShipState] = []
 	for sd in data.get("ships", []):
