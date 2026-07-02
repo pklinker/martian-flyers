@@ -189,9 +189,10 @@ static func dict_to_engine(data: Dictionary) -> TurnEngine:
 	return engine
 
 
-## Returns "" if every ship in the save (and every gun its def mounts) is known
-## to the active catalog; otherwise a message naming the first missing id. Checks
-## the gun level too: a hull can survive a mod removal that took only its gun.
+## Returns "" if every ship in the save (and every gun its def mounts) and every
+## terrain kind it uses is known to the active catalog; otherwise a message naming
+## the first missing id. Checks the gun level too: a hull can survive a mod
+## removal that took only its gun.
 static func _missing_dependency(data: Dictionary) -> String:
 	for sd in data.get("ships", []):
 		var did := StringName(sd["def_id"])
@@ -207,6 +208,17 @@ static func _missing_dependency(data: Dictionary) -> String:
 			var gid := StringName(m["gun_id"])
 			if not ShipLibrary.has_gun(gid):
 				return "this save's '%s' mounts unknown gun '%s' (a removed mod?)" % [did, gid]
+	# Terrain kinds: a save stores a kind id per hex. A string id the catalog no
+	# longer provides (a removed mod) would silently render as empty and drop its
+	# LOS/spotting, so decline instead. Legacy int values always map to core kinds
+	# (LEGACY_TERRAIN_IDS) and are skipped here.
+	for hex in data.get("terrain", {}):
+		var v: Variant = data["terrain"][hex]
+		if typeof(v) == TYPE_INT or typeof(v) == TYPE_FLOAT:
+			continue
+		var kid := StringName(v)
+		if kid != TerrainDef.NONE and not MapLibrary.has_kind(kid):
+			return "this save uses terrain kind '%s' the catalog no longer provides (a removed mod?)" % kid
 	return ""
 
 

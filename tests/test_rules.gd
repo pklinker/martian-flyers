@@ -2288,6 +2288,13 @@ func _test_save_legacy_terrain_migration() -> void:
 	var modern := SaveGame.dict_to_engine(SaveGame.engine_to_dict(eng))
 	_check_eq(modern.terrain, eng.terrain, "post-T3 string terrain round-trips unchanged")
 
+	# T6 guard: a save naming a terrain kind the catalog no longer provides (a
+	# removed mod) declines cleanly rather than silently dropping that terrain.
+	var orphan := SaveGame.engine_to_dict(eng)
+	orphan["terrain"] = { Vector2i(5, 5): "ghost_kind" }
+	_check(SaveGame.dict_to_engine(orphan) == null, "a save with an unknown terrain kind declines")
+	_check(SaveGame.load_error != "", "the terrain-kind decline sets a load_error")
+
 
 func _test_save_roundtrip() -> void:
 	# Build an engine, then rough up the state so every serialized field carries
