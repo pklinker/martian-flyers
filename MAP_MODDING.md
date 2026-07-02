@@ -547,7 +547,11 @@ development; pack export aims it at a fresh pack dir instead.
 2. **Map catalog (§4).** `MapDef` + maps.json in the same `MapCatalog`,
    `apply_map`, `MapLibrary` facade, referential-integrity pass (§0.2),
    `DEFAULT_`-const/instance-var deploy split (§0.7), `map_id` in saves (§0.9).
-3. **UI.** Map picker in battle config; `map_demo` uses it.
+3. **UI.** Map picker in battle config; `map_demo` uses it. ✅ **DONE (`62081bc`)** — a
+   "BATTLEFIELD" `OptionButton` on the main menu, fed by `MapLibrary.map_ids()`;
+   `BattleConfig.map_id` carries the choice; `setup_rosters`/`_new_game` thread it
+   through. Added a second bundled map (`storm_front`) so the picker is real.
+   Suite 523/0; verified in-app (menu picker + storm_front boots its own layout).
 4. **Mod-asset loading (§5.4, §0.3).** `ModelBaker`/`DustSprites` resolve assets
    by each kind's source root, scanning `user://mods/<pack>/assets/`; mod glb uses
    the step-0 `GLTFDocument` path. The game half of the modder path.
