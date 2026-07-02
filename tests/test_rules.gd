@@ -1692,6 +1692,14 @@ func _test_apply_map() -> void:
 			1, &"dead_sea_bottom")
 	_check_eq(eng2.map_id, &"dead_sea_bottom", "setup_fleet applies the named map")
 
+	# A second bundled map is in the catalog and selectable (the picker lists it).
+	_check(MapLibrary.has_map(&"storm_front"), "the second core map storm_front is catalogued")
+	_check(MapLibrary.map_ids().size() >= 2, "the catalog offers at least two maps to pick from")
+	var eng3 := TurnEngine.new()
+	eng3.setup_rosters([&"helium_scout"], [&"zodanga_cruiser"], 1, &"storm_front")
+	_check_eq(eng3.map_id, &"storm_front", "setup_rosters applies the storm_front map")
+	_check_eq(eng3.terrain.size(), 7, "storm_front lays its own seven-cell layout")
+
 
 ## Step 5 (save hardening): a save naming a ship the active catalog no longer
 ## provides (a removed mod) declines cleanly — no half-built engine — and reports

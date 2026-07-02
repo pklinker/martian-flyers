@@ -129,8 +129,10 @@ func apply_map(m: MapDef) -> void:
 ## deployment lines either side of the field centre, each line facing the enemy.
 ## Builds placements and defers to setup_fleet (so the no-stack / on-board rules
 ## still apply).
-func setup_rosters(side0: Array, side1: Array, seed_value: int = 0) -> void:
-	var cx := map_cols / 2
+func setup_rosters(side0: Array, side1: Array, seed_value: int = 0, map: StringName = DEFAULT_MAP_ID) -> void:
+	# Centre on the chosen map's board (not the current default), so rosters laid
+	# out here start on-map before setup_fleet applies it.
+	var cx := MapLibrary.map(map).cols / 2
 	var placements: Array = []
 	# Side 0 deploys west of centre facing NE (1) toward the enemy; side 1 east of
 	# centre facing SW (4). Ships on a line are spread two hexes apart so the
@@ -141,7 +143,7 @@ func setup_rosters(side0: Array, side1: Array, seed_value: int = 0) -> void:
 	for i in side1.size():
 		placements.append({ "ship_id": side1[i], "side": 1,
 				"hex": Vector2i(cx + 6, 8 + i * 2), "facing": 4 })
-	setup_fleet(placements, seed_value)
+	setup_fleet(placements, seed_value, map)
 
 
 ## The nearest legal, unoccupied deploy hex at or spiralling out from `want`.

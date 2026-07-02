@@ -58,6 +58,12 @@ func _build_ui() -> void:
 
 	_build_difficulty(col)
 
+	var gap_m := Control.new()
+	gap_m.custom_minimum_size = Vector2(0, 12)
+	col.add_child(gap_m)
+
+	_build_map_picker(col)
+
 	var gap2 := Control.new()
 	gap2.custom_minimum_size = Vector2(0, 20)
 	col.add_child(gap2)
@@ -120,6 +126,46 @@ func _build_difficulty(col: VBoxContainer) -> void:
 func _on_pick_difficulty(level: int) -> void:
 	BattleConfig.difficulty = level
 	_refresh_difficulty()
+
+
+## The battlefield picker: a caption + a dropdown of every map in the catalog
+## (bundled + mods), by display name. The choice lives in BattleConfig.map_id and
+## applies to every battle launched from here. Data-driven — a new map (a mod, or
+## one authored in 3d-gen) appears automatically with no menu change.
+func _build_map_picker(col: VBoxContainer) -> void:
+	var caption := Label.new()
+	caption.text = "BATTLEFIELD"
+	caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	caption.add_theme_font_size_override("font_size", 13)
+	caption.add_theme_color_override("font_color", UiTheme.COL_MUTED)
+	col.add_child(caption)
+
+	var picker := OptionButton.new()
+	picker.custom_minimum_size = Vector2(246, 38)
+	picker.focus_mode = Control.FOCUS_NONE
+	picker.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	picker.add_theme_font_size_override("font_size", 17)
+
+	var ids := MapLibrary.map_ids()
+	# If the remembered choice is gone (a removed mod), fall back to the first map.
+	if not MapLibrary.has_map(BattleConfig.map_id) and not ids.is_empty():
+		BattleConfig.map_id = ids[0]
+	for i in ids.size():
+		picker.add_item(MapLibrary.map(ids[i]).display_name, i)
+		picker.set_item_metadata(i, ids[i])
+		if ids[i] == BattleConfig.map_id:
+			picker.select(i)
+	picker.item_selected.connect(_on_pick_map.bind(picker))
+
+	# Centre the dropdown within the menu column.
+	var wrap := HBoxContainer.new()
+	wrap.alignment = BoxContainer.ALIGNMENT_CENTER
+	wrap.add_child(picker)
+	col.add_child(wrap)
+
+
+func _on_pick_map(index: int, picker: OptionButton) -> void:
+	BattleConfig.map_id = picker.get_item_metadata(index)
 
 
 ## Restyle every chip to mark the live choice (bright accent fill + frame when
