@@ -674,10 +674,10 @@ Synthesized from this review's findings. Each derives from a specific finding.
   - Surfaced by: Issue 1 / §0.2 — referential integrity (landed in T2); §0.7; §0.9
   - Files: `turn_engine.gd` (`apply_map`, deleted `_place_terrain`, `DEFAULT_` deploy split + instance vars, `map_id`), `save_game.gd` (`map_id`/deploy in save), `tests/test_rules.gd`
   - Result: `setup_fleet(fleets, seed, map_id=dead_sea_bottom)` runs `apply_map` before placement; deploy band is a per-map instance var; `map_id`+deploy params round-trip in saves. Suite **519/0**; fresh game renders identically; real resume save loads (map_id defaults). **Next: battle-config UI map picker (landing step 3).**
-- [ ] **T5 (P2, human: ~4h / CC: ~30min)** — ui — asset-origin path resolution + render_type
-  - Surfaced by: Issue 2 / Issue 5 / §0.3 / §0.6
-  - Files: `ui/model_baker.gd`, `ui/dust_sprites.gd`, `ui/hex_map.gd`
-  - Verify: path-resolution + render-type classifier unit tests
+- [x] **T5 (P2, human: ~4h / CC: ~30min)** — ui — mod asset loading from `user://` ✅ **DONE (`e5cbd9f`)**
+  - Surfaced by: §5.4 / §0.4 — the critical runtime-glb risk (asset-origin + render_type landed in T2/T3)
+  - Files: `ui/model_baker.gd` (GLTFDocument runtime glb), `ui/dust_sprites.gd` (per-kind + Image png), `ui/hex_map.gd`, `tests/test_rules.gd`
+  - Result: `ModelBaker._load_variant` imports a sidecar-less `user://` glb via `GLTFDocument`→`PackedScene` (core res:// keeps the baked path); `DustSprites` is per-kind and loads `user://` pngs via `Image`. Staged-mod-pack test proves both load at runtime; suite **530/0**; verified in-app — a mod pack's custom glb terrain bakes and renders in iso on a mod-supplied map.
 - [ ] **T6 (P2, human: ~3h / CC: ~30min)** — save — map_id + kind dependency guard
   - Surfaced by: §0.9 / Outside voice #3 — save consistency
   - Files: `src/rules/save_game.gd`
