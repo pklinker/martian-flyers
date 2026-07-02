@@ -96,10 +96,10 @@ differ; the body is kept for rationale.
 11. **3d-gen gets Vitest.** No test framework exists there today. Add Vitest
 	(Vite-native) to cover the `MapDoc→maps.json` serializer, the golden-fixture
 	round-trip, and the merge endpoint's upsert-by-id (add / replace / create /
-    preserve-others) — the catalog-corrupting logic.
+	preserve-others) — the catalog-corrupting logic.
 12. **Editor grid: merged geometry + InstancedMesh.** The 48×48 painter draws all
-    hex outlines as one merged `LineSegments` (single draw call) and painted cells
-    as one `THREE.InstancedMesh` per kind — O(kinds) draw calls, not O(cells).
+	hex outlines as one merged `LineSegments` (single draw call) and painted cells
+	as one `THREE.InstancedMesh` per kind — O(kinds) draw calls, not O(cells).
 13. **Render tuning is authored against the mesh (desync guard).** `frame`/`span`/
 	`look_y`/`anchor` are tuned to a specific glb. They are authored in 3d-gen's
 	live 3D-iso preview (WYSIWYG against the actual mesh) and pack export bundles
@@ -337,7 +337,7 @@ the start.
 ```json
 {
   "terrain": [
-    {
+	{
 	  "id": "hill",
 	  "display_name": "Hill",
 	  "blocks_los": true,
@@ -346,19 +346,19 @@ the start.
 		"color": "#805926cc", "height": 0.55,
 		"model": { "dir": "terrain", "prefix": "hill",
 				   "frame": 2.2, "span": 2.0, "look_y": 0.3, "anchor": 0.58 }
-      }
-    },
-    {
+	  }
+	},
+	{
 	  "id": "tower", "display_name": "Tower", "blocks_los": true, "spot_penalty": 0,
 	  "render": { "color": "#6b6b6be0", "height": 1.5,
 		"model": { "dir": "buildings", "prefix": "tower",
 				   "frame": 2.0, "span": 1.1, "look_y": 0.7, "anchor": 0.72 } }
-    },
-    {
+	},
+	{
 	  "id": "dust_storm", "display_name": "Dust", "blocks_los": false, "spot_penalty": 1,
 	  "render": { "color": "#d9b847_6b", "height": 0.0,
 		"sprite": { "prefix": "duststorm", "span": 1.8, "anchor": 0.62 } }
-    }
+	}
   ]
 }
 ```
@@ -666,10 +666,10 @@ Synthesized from this review's findings. Each derives from a specific finding.
   - Surfaced by: §0.8 / Outside voice #4 — sentinel + hot-path callers
   - Files: `terrain_def.gd` (→ catalog facade), `turn_engine.gd`, `ui/hex_map.gd`, `ui/model_baker.gd`, `ui/map_demo.gd`, `terrain_kind_def.gd`, `data/terrain.json`, `tests/test_rules.gd`
   - Result: `terrain{}` now `Vector2i → StringName`; `TerrainDef` is a static facade over `MapLibrary.kind`; `ModelBaker` catalog-driven (keyed by id, source_root paths); `hex_map` branches on `is_sprite()` render-type, not a dust id; `render.footprint` data-drives the prism radius. `damage_resolver`/`ship_state`/`ship_ai` needed **no change** (they call `TerrainDef.los_clear/dust_along`, signatures unchanged). `_test_terrain_los/dust/fire` converted to string ids assert identical outcomes; suite **495/0**; `map_demo` boots and renders hills/tower/dust identically in overhead **and** isometric (3D bake + dust sprites verified visually). `DustSprites` per-kind sprite sheets + mod glb loading remain T5.
-- [ ] **T4 (P1, human: ~3h / CC: ~20min)** — src/rules — referential integrity + `apply_map`
-  - Surfaced by: Issue 1 / §0.2 — unknown-kind cell handling
-  - Files: `map_catalog.gd`, `turn_engine.gd` (`apply_map`, `DEFAULT_` consts §0.7)
-  - Verify: unknown-kind map drops loudly; `dead_sea_bottom` parity test
+- [x] **T4 (P1, human: ~3h / CC: ~20min)** — src/rules — `apply_map` + deploy split ✅ **DONE (`e569e9f`)**
+  - Surfaced by: Issue 1 / §0.2 — referential integrity (landed in T2); §0.7; §0.9
+  - Files: `turn_engine.gd` (`apply_map`, deleted `_place_terrain`, `DEFAULT_` deploy split + instance vars, `map_id`), `save_game.gd` (`map_id`/deploy in save), `tests/test_rules.gd`
+  - Result: `setup_fleet(fleets, seed, map_id=dead_sea_bottom)` runs `apply_map` before placement; deploy band is a per-map instance var; `map_id`+deploy params round-trip in saves. Suite **519/0**; fresh game renders identically; real resume save loads (map_id defaults). **Next: battle-config UI map picker (landing step 3).**
 - [ ] **T5 (P2, human: ~4h / CC: ~30min)** — ui — asset-origin path resolution + render_type
   - Surfaced by: Issue 2 / Issue 5 / §0.3 / §0.6
   - Files: `ui/model_baker.gd`, `ui/dust_sprites.gd`, `ui/hex_map.gd`
