@@ -74,15 +74,52 @@ func scan_assets() -> void:
 func _register(key: Variant, dir: String, prefix: String, frame: float, span: float, look_y: float, anchor: float) -> void:
 	var variants: Array[PackedScene] = []
 	for i in range(1, 6):
-		var path := "%s%s_%d.glb" % [dir, prefix, i]
-		if ResourceLoader.exists(path):
-			var res := load(path)
-			if res is PackedScene:
-				variants.append(res)
+		var v := _load_variant("%s%s_%d.glb" % [dir, prefix, i])
+		if v != null:
+			variants.append(v)
 	if variants.is_empty():
 		return
 	_models[key] = variants
 	_cfg[key] = {"frame": frame, "span": span, "look_y": look_y, "anchor": anchor}
+
+
+## Load one model variant as a PackedScene, or null if absent / unloadable.
+## Editor-imported res:// assets resolve to their baked scene via ResourceLoader
+## (the fast path core kinds use). A user:// mod glb has NO .import sidecar, so
+## it is imported at runtime with GLTFDocument and packed into a scene — the path
+## the T1 spike proved (MAP_MODDING.md §0.4; tests/spike_runtime_glb.gd).
+static func _load_variant(path: String) -> PackedScene:
+	if path.begins_with("res://"):
+		if ResourceLoader.exists(path):
+			var res := load(path)
+			if res is PackedScene:
+				return res
+		return null
+	# Mod asset (user:// etc.): runtime glTF import → PackedScene.
+	if not FileAccess.file_exists(path):
+		return null
+	var doc := GLTFDocument.new()
+	var state := GLTFState.new()
+	if doc.append_from_file(ProjectSettings.globalize_path(path), state) != OK:
+		return null
+	var scene := doc.generate_scene(state)
+	if not (scene is Node3D):
+		if scene != null:
+			scene.free()
+		return null
+	# pack() only keeps descendants whose owner is set — the spike's one gotcha.
+	_own_all(scene, scene)
+	var packed := PackedScene.new()
+	var ok := packed.pack(scene)
+	scene.free()
+	return packed if ok == OK else null
+
+## Recursively set `owner_node` as the owner of every descendant so PackedScene
+## .pack() captures the whole runtime-imported subtree.
+static func _own_all(node: Node, owner_node: Node) -> void:
+	for c in node.get_children():
+		c.owner = owner_node
+		_own_all(c, owner_node)
 
 func has_model(key: Variant) -> bool:
 	return _models.has(key) and not (_models[key] as Array).is_empty()

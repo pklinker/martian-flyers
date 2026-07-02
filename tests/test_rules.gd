@@ -88,6 +88,7 @@ func _init() -> void:
 	_test_map_catalog_referential_integrity()
 	_test_map_catalog_roundtrip()
 	_test_apply_map()
+	_test_mod_asset_loading()
 	_test_deployment_rules()
 	_test_side_victory()
 	_test_fleet_cadence()
@@ -217,24 +218,24 @@ func _test_model_baker() -> void:
 ## so the map draws the procedural puffs, the shipped sheet in assets/terrain/ loads, and
 ## the frame clock + atlas math must loop on frame count and map indices to grid cells.
 func _test_dust_sprites() -> void:
-	# Empty loader (never scanned) → procedural fallback path.
+	# Empty loader (never scanned) → procedural fallback path for any kind.
 	var empty := DustSprites.new()
-	_check(not empty.has_sprites(), "unscanned loader has no sprites → procedural fallback")
-	_check(empty.variant_count() == 0, "variant_count is 0 before scanning")
+	_check(not empty.has_sprites(&"dust_storm"), "unscanned loader has no sprites → procedural fallback")
+	_check(empty.variant_count(&"dust_storm") == 0, "variant_count is 0 before scanning")
 
-	# Scanned loader picks up the shipped duststorm_1 sheet.
+	# Scanned loader picks up the shipped dust_storm sheet, keyed by kind id.
 	var ds := DustSprites.new()
 	ds.scan_assets()
-	_check(ds.has_sprites(), "shipped dust sheet is loaded")
-	_check(ds.variant_count() >= 1, "at least one dust variant present")
+	_check(ds.has_sprites(&"dust_storm"), "shipped dust_storm sheet is loaded by kind")
+	_check(ds.variant_count(&"dust_storm") >= 1, "at least one dust_storm variant present")
+	_check(not ds.has_sprites(&"hill"), "a mesh kind (hill) reports no sprite sheets")
 
-	# Pure playback math on a synthetic 5×5, 24-frame sheet (appended past any real ones).
-	var v := ds.variant_count()
-	ds._variants.append({"cols": 5, "rows": 5, "frames": 24, "frame_size": 128, "fps": 24.0})
-	_check(ds.frame_for_time(v, 0.0) == 0, "t=0 → frame 0")
-	_check(ds.frame_for_time(v, 0.5) == 12, "0.5s at 24fps → frame 12")
-	_check(ds.frame_for_time(v, 1.0) == 0, "24 frames at 24fps loop back to 0 after 1s")
-	_check(ds.frame_region(v, 6) == Rect2(128, 128, 128, 128), "frame 6 maps to grid cell (1,1)")
+	# Pure playback math on a synthetic 5×5, 24-frame sheet under a test kind.
+	ds._by_kind[&"_test_kind"] = [{"cols": 5, "rows": 5, "frames": 24, "frame_size": 128, "fps": 24.0}]
+	_check(ds.frame_for_time(&"_test_kind", 0, 0.0) == 0, "t=0 → frame 0")
+	_check(ds.frame_for_time(&"_test_kind", 0, 0.5) == 12, "0.5s at 24fps → frame 12")
+	_check(ds.frame_for_time(&"_test_kind", 0, 1.0) == 0, "24 frames at 24fps loop back to 0 after 1s")
+	_check(ds.frame_region(&"_test_kind", 0, 6) == Rect2(128, 128, 128, 128), "frame 6 maps to grid cell (1,1)")
 
 
 # ---------------------------------------------------------------------------
@@ -1350,6 +1351,15 @@ func _write_json(path: String, data: Dictionary) -> void:
 	f.store_string(JSON.stringify(data))
 	f.close()
 
+## Copy a file's raw bytes to `dst` (parent dirs created). Used to stage a mod
+## pack from shipped assets so the copy carries NO .import sidecar — exactly what
+## a downloaded pack looks like on a player's disk.
+func _copy_file(src: String, dst: String) -> void:
+	DirAccess.make_dir_recursive_absolute(dst.get_base_dir())
+	var f := FileAccess.open(dst, FileAccess.WRITE)
+	f.store_buffer(FileAccess.get_file_as_bytes(src))
+	f.close()
+
 ## Recursively delete a directory (no built-in for this in Godot).
 func _purge_dir(path: String) -> void:
 	if not DirAccess.dir_exists_absolute(path):
@@ -1699,6 +1709,49 @@ func _test_apply_map() -> void:
 	eng3.setup_rosters([&"helium_scout"], [&"zodanga_cruiser"], 1, &"storm_front")
 	_check_eq(eng3.map_id, &"storm_front", "setup_rosters applies the storm_front map")
 	_check_eq(eng3.terrain.size(), 7, "storm_front lays its own seven-cell layout")
+
+
+## T5: a mod pack in user://mods/ ships its own glb + sprite assets with no
+## .import sidecar. ModelBaker imports the glb at runtime via GLTFDocument (the
+## T1-spike path), and DustSprites loads the png via Image — so a player who
+## drops a pack in gets its custom 3D terrain and animated effects.
+func _test_mod_asset_loading() -> void:
+	_purge_dir(TEST_MOD_ROOT)
+	var pack := TEST_MOD_ROOT + "/glbpack"
+	_write_json(pack + "/terrain.json", { "terrain": [
+		{ "id": "mod_mesa", "display_name": "Mod Mesa", "blocks_los": true,
+			"render": { "color": [0.4, 0.3, 0.2, 0.9], "height": 0.6,
+				"model": { "dir": "terrain", "prefix": "mesa",
+					"frame": 2.2, "span": 2.0, "look_y": 0.3, "anchor": 0.58 } } },
+		{ "id": "mod_haze", "display_name": "Mod Haze", "spot_penalty": 1,
+			"render": { "color": [0.8, 0.7, 0.3, 0.4],
+				"sprite": { "prefix": "haze", "span": 1.8, "anchor": 0.62 } } } ] })
+	# Stage the pack's assets from shipped files (raw bytes → no .import sidecar).
+	_copy_file("res://assets/terrain/hill_1.glb", pack + "/assets/terrain/mesa_1.glb")
+	_copy_file("res://assets/terrain/duststorm_1.png", pack + "/assets/terrain/haze_1.png")
+	_copy_file("res://assets/terrain/duststorm_1.json", pack + "/assets/terrain/haze_1.json")
+
+	# Make a catalog over the pack the active one so the catalog-driven loaders
+	# see the mod kinds and their pack-relative asset roots.
+	MapLibrary.use_catalog(MapCatalog.new(TEST_MOD_ROOT + "/"))
+	_check_eq(MapLibrary.kind(&"mod_mesa").source_root, pack + "/", "mod kind carries its pack root")
+
+	# glb → runtime glTF import (GLTFDocument), the capability the T1 spike proved.
+	var mb := ModelBaker.new()
+	mb.scan_assets()
+	_check(mb.has_model(&"mod_mesa"), "mod glb loads at runtime from user:// via GLTFDocument")
+	_check(mb.variant_count(&"mod_mesa") >= 1, "the mod mesh variant is registered")
+	_check(mb.has_model(&"hill"), "core res:// models still load alongside mod ones")
+	mb.free()
+
+	# sprite sheet → runtime png load (Image).
+	var ds := DustSprites.new()
+	ds.scan_assets()
+	_check(ds.has_sprites(&"mod_haze"), "mod sprite sheet loads at runtime from user:// via Image")
+	_check(ds.variant_count(&"mod_haze") >= 1, "the mod sprite variant is registered")
+
+	MapLibrary.reset_default()
+	_purge_dir(TEST_MOD_ROOT)
 
 
 ## Step 5 (save hardening): a save naming a ship the active catalog no longer
