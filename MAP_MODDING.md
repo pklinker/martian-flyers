@@ -87,8 +87,8 @@ differ; the body is kept for rationale.
    autosave** (`user://resume.flyersave`) is a save, and restoring its int
    terrain crashed the string-id facade (`spot_penalty(0)`). `dict_to_engine` now
    upgrades legacy int terrain on load (`LEGACY_TERRAIN_IDS`, version-agnostic).
-   The still-pending T6 work is the *unknown-kind* dependency guard (declining a
-   save that names a kind no catalog provides), separate from this int migration.
+   The *unknown-kind* dependency guard (declining a save that names a kind no
+   catalog provides) landed in T6 (`82bdfd3`), separate from this int migration.
 10. **Schema kept in sync by a golden fixture.** A committed example pack
 	(`maps.json` + `terrain.json`) is asserted by the flyers GDScript suite (must
 	parse every field) **and** by a 3d-gen test (serializer reproduces it).
@@ -678,10 +678,10 @@ Synthesized from this review's findings. Each derives from a specific finding.
   - Surfaced by: §5.4 / §0.4 — the critical runtime-glb risk (asset-origin + render_type landed in T2/T3)
   - Files: `ui/model_baker.gd` (GLTFDocument runtime glb), `ui/dust_sprites.gd` (per-kind + Image png), `ui/hex_map.gd`, `tests/test_rules.gd`
   - Result: `ModelBaker._load_variant` imports a sidecar-less `user://` glb via `GLTFDocument`→`PackedScene` (core res:// keeps the baked path); `DustSprites` is per-kind and loads `user://` pngs via `Image`. Staged-mod-pack test proves both load at runtime; suite **530/0**; verified in-app — a mod pack's custom glb terrain bakes and renders in iso on a mod-supplied map.
-- [ ] **T6 (P2, human: ~3h / CC: ~30min)** — save — map_id + kind dependency guard
+- [x] **T6 (P2, human: ~3h / CC: ~30min)** — save — map_id + kind dependency guard ✅ **DONE (`82bdfd3`)**
   - Surfaced by: §0.9 / Outside voice #3 — save consistency
-  - Files: `src/rules/save_game.gd`
-  - Verify: round-trip test; unknown-kind save declines
+  - Files: `src/rules/save_game.gd`, `tests/test_rules.gd`
+  - Result: `map_id`/deploy params in the save landed with T4; the int→id migration with the T3 save-crash fix; T6 adds the terrain-kind dependency guard — `_missing_dependency` declines a save naming a kind the catalog no longer provides (legacy ints skipped). Suite **532/0**; real legacy resume save still loads.
 - [ ] **T7 (P1, human: ~1d / CC: ~2h)** — 3d-gen — Vitest + serializer + merge endpoint
   - Surfaced by: Issue 6 / §0.10 / §0.11 — no test infra; merge corrupts catalog
   - Files: 3d-gen `package.json`, `vitest.config.ts`, `src/export/*`, `vite-plugin-savefiles.ts`, shared golden fixture
