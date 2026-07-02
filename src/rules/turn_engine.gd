@@ -44,18 +44,26 @@ var terrain: Dictionary = {}
 var map_cols: int = 48
 var map_rows: int = 48
 
+## The map this engagement is played on (provenance / save + UI). apply_map sets
+## it from a MapDef; the default is the bundled dead_sea_bottom.
+const DEFAULT_MAP_ID := &"dead_sea_bottom"
+var map_id: StringName = DEFAULT_MAP_ID
+
 ## Deployment (pre-game placement). A player deploys only inside a band on their
 ## own side of the field and never within striking distance of the enemy, so no
 ## fleet can open the engagement on top of the other. Both are rules — validated
-## in is_legal_deploy_hex — not UI hints.
-##   DEPLOY_ZONE_COLS: width of the player's band, measured from the west edge
-##                     (columns 0 .. DEPLOY_ZONE_COLS-1) — the western half of the
+## in is_legal_deploy_hex — not UI hints. The DEFAULT_ consts are the fallback
+## values; the live values are per-map instance vars that apply_map overrides.
+##   deploy_zone_cols: width of the player's band, measured from the west edge
+##                     (columns 0 .. deploy_zone_cols-1) — the western half of the
 ##                     default 48-wide field. The enemy line deploys east of
 ##                     centre, so this keeps the player on their own side.
-##   DEPLOY_MIN_SEPARATION: the smallest legal hex distance between any player
+##   deploy_min_separation: the smallest legal hex distance between any player
 ##                     ship and any enemy ship at deployment.
-const DEPLOY_ZONE_COLS := 24
-const DEPLOY_MIN_SEPARATION := 10
+const DEFAULT_DEPLOY_ZONE_COLS := 24
+const DEFAULT_DEPLOY_MIN_SEPARATION := 10
+var deploy_zone_cols: int = DEFAULT_DEPLOY_ZONE_COLS
+var deploy_min_separation: int = DEFAULT_DEPLOY_MIN_SEPARATION
 
 ## Movement sequencer state, owned here so every client (UI, AI, tests) shares
 ## one impulse sequence. Driven via begin_movement()/next_mover().
@@ -85,9 +93,13 @@ func setup(seed_value: int = 0) -> void:
 ## board (map_contains) and no two ships may stack (the collision rule). A
 ## requested hex that is off-board or already taken is nudged to the nearest free
 ## legal hex, so any caller-supplied roster always deploys somewhere valid.
-func setup_fleet(fleets: Array, seed_value: int = 0) -> void:
+##
+## `map_id` selects the field: apply_map runs FIRST (before placement) so the
+## board size and deploy band the nudge respects come from the chosen map.
+func setup_fleet(fleets: Array, seed_value: int = 0, map: StringName = DEFAULT_MAP_ID) -> void:
 	if seed_value != 0:
 		rng.seed = seed_value
+	apply_map(MapLibrary.map(map))
 	var built: Array[ShipState] = []
 	var occupied: Array[Vector2i] = []
 	for p in fleets:
@@ -98,8 +110,19 @@ func setup_fleet(fleets: Array, seed_value: int = 0) -> void:
 				ShipLibrary.ship(p["ship_id"]),
 				int(p.get("side", 0)), hex, int(p.get("facing", 0))))
 	ships.assign(built)
-	_place_terrain()
 	_set_phase(Phase.ALLOCATION)
+
+
+## Adopt a map: set the board size, the per-side deploy band + spacing, the
+## terrain layout, and the map id. Replaces the old hard-coded _place_terrain().
+## Runs before ship placement in setup_fleet so nudging respects the map's board.
+func apply_map(m: MapDef) -> void:
+	map_id = m.id
+	map_cols = m.cols
+	map_rows = m.rows
+	deploy_zone_cols = m.deploy_zone_cols
+	deploy_min_separation = m.deploy_min_separation
+	terrain = m.terrain_map()
 
 
 ## Convenience for the common case: two rosters of ship ids laid out on opposing
@@ -156,7 +179,7 @@ func _hex_ring(center: Vector2i, radius: int) -> Array[Vector2i]:
 
 ## May `side` legally deploy a ship onto `hex`? All must hold: the hex is on the
 ## board, inside that side's deployment band, unoccupied, and at least
-## DEPLOY_MIN_SEPARATION from every living enemy ship. `moving_ship` (the ship
+## deploy_min_separation from every living enemy ship. `moving_ship` (the ship
 ## being relocated, if any) is ignored by the occupancy test so re-dropping a
 ## ship on or beside its own current hex is allowed.
 func is_legal_deploy_hex(hex: Vector2i, side: int, moving_ship: ShipState = null) -> bool:
@@ -170,7 +193,7 @@ func is_legal_deploy_hex(hex: Vector2i, side: int, moving_ship: ShipState = null
 		if s.hex == hex and not s.is_destroyed:
 			return false
 		if s.side != side and not s.is_destroyed \
-				and HexMath.distance(hex, s.hex) < DEPLOY_MIN_SEPARATION:
+				and HexMath.distance(hex, s.hex) < deploy_min_separation:
 			return false
 	return true
 
@@ -203,33 +226,14 @@ func place_ship(ship: ShipState, hex: Vector2i, facing: int) -> bool:
 ## mirrored eastern band. Returned as a half-open [from, to) range.
 func _deploy_cols(side: int) -> Array:
 	if side == 0:
-		return range(0, DEPLOY_ZONE_COLS)
-	return range(map_cols - DEPLOY_ZONE_COLS, map_cols)
+		return range(0, deploy_zone_cols)
+	return range(map_cols - deploy_zone_cols, map_cols)
 
 
 func _in_deploy_band(hex: Vector2i, side: int) -> bool:
 	if side == 0:
-		return hex.x >= 0 and hex.x < DEPLOY_ZONE_COLS
-	return hex.x >= map_cols - DEPLOY_ZONE_COLS and hex.x < map_cols
-
-
-func _place_terrain() -> void:
-	terrain.clear()
-	# Hill ridge crossing the main approach lane between the starting positions.
-	# Ships at (20,10) and (32,4) converge through roughly (26,7); the ridge
-	# forces each captain to decide whether to punch through (and eat a shot
-	# from the exposed side) or bank around the flanks.
-	terrain[Vector2i(25, 7)] = &"hill"
-	terrain[Vector2i(26, 7)] = &"hill"
-	# Ruined tower on the NE flank — blocks LOS and gives cover to a flanking
-	# scout trying to work around the cruiser.
-	terrain[Vector2i(27, 5)] = &"tower"
-	# Dust storm region near the cruiser's side. Flying through here costs a
-	# +1 per hex on every shot, but lookout crew cancel it — good position for
-	# the scout's torpedo run if the cruiser retreats into the dust.
-	terrain[Vector2i(28, 8)] = &"dust_storm"
-	terrain[Vector2i(29, 8)] = &"dust_storm"
-	terrain[Vector2i(29, 7)] = &"dust_storm"
+		return hex.x >= 0 and hex.x < deploy_zone_cols
+	return hex.x >= map_cols - deploy_zone_cols and hex.x < map_cols
 
 
 # ---------------------------------------------------------------------------

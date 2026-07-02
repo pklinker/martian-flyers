@@ -110,8 +110,11 @@ static func engine_to_dict(engine: TurnEngine) -> Dictionary:
 		"phase": int(engine.phase),
 		"rng_seed": int(engine.rng.seed),
 		"rng_state": int(engine.rng.state),
+		"map_id": String(engine.map_id),
 		"map_cols": engine.map_cols,
 		"map_rows": engine.map_rows,
+		"deploy_zone_cols": engine.deploy_zone_cols,
+		"deploy_min_separation": engine.deploy_min_separation,
 		"current_impulse": engine.current_impulse,
 		"terrain": engine.terrain.duplicate(),
 		"ships": ships_data,
@@ -151,8 +154,11 @@ static func dict_to_engine(data: Dictionary) -> TurnEngine:
 	var engine := TurnEngine.new()
 	engine.turn_number = int(data.get("turn_number", 1))
 	engine.phase = int(data.get("phase", TurnEngine.Phase.ALLOCATION)) as TurnEngine.Phase
+	engine.map_id = StringName(data.get("map_id", TurnEngine.DEFAULT_MAP_ID))
 	engine.map_cols = int(data.get("map_cols", engine.map_cols))
 	engine.map_rows = int(data.get("map_rows", engine.map_rows))
+	engine.deploy_zone_cols = int(data.get("deploy_zone_cols", engine.deploy_zone_cols))
+	engine.deploy_min_separation = int(data.get("deploy_min_separation", engine.deploy_min_separation))
 	engine.current_impulse = int(data.get("current_impulse", 0))
 	engine.rng.seed = int(data.get("rng_seed", 0))
 	engine.rng.state = int(data.get("rng_state", 0))

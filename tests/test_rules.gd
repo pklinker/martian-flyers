@@ -87,6 +87,7 @@ func _init() -> void:
 	_test_map_catalog_layering()
 	_test_map_catalog_referential_integrity()
 	_test_map_catalog_roundtrip()
+	_test_apply_map()
 	_test_deployment_rules()
 	_test_side_victory()
 	_test_fleet_cadence()
@@ -1470,7 +1471,7 @@ func _test_catalog_mods() -> void:
 # ---------------------------------------------------------------------------
 
 ## The bundled terrain.json + maps.json reproduce today's hard-coded TerrainDef
-## rules, ModelBaker/DustSprites tuning, and _place_terrain() layout EXACTLY.
+## rules, ModelBaker/DustSprites tuning, and the historical terrain layout EXACTLY.
 func _test_map_catalog_parity() -> void:
 	var cat := MapCatalog.new("res://__no_such_mod_dir__/")
 
@@ -1524,23 +1525,26 @@ func _test_map_catalog_parity() -> void:
 	_check(is_equal_approx(dust_sprite["anchor"], DustSprites.GROUND_ANCHOR),
 			"dust sprite anchor matches DustSprites")
 
-	# dead_sea_bottom reproduces the map-size/deploy consts and _place_terrain().
+	# dead_sea_bottom reproduces the map-size/deploy consts and the historical
+	# _place_terrain() layout. That code is gone (apply_map is the source now), so
+	# the six cells are pinned here as the golden reference.
 	_check(cat.has_map(&"dead_sea_bottom"), "maps.json provides dead_sea_bottom")
 	var m := cat.map(&"dead_sea_bottom")
 	_check_eq(m.cols, 48, "map cols parity")
 	_check_eq(m.rows, 48, "map rows parity")
-	_check_eq(m.deploy_zone_cols, TurnEngine.DEPLOY_ZONE_COLS, "deploy_zone_cols parity")
-	_check_eq(m.deploy_min_separation, TurnEngine.DEPLOY_MIN_SEPARATION, "deploy_min_separation parity")
-	var eng := TurnEngine.new()
-	eng._place_terrain()
-	var want := eng.terrain            # Vector2i -> StringName kind id
+	_check_eq(m.deploy_zone_cols, TurnEngine.DEFAULT_DEPLOY_ZONE_COLS, "deploy_zone_cols parity")
+	_check_eq(m.deploy_min_separation, TurnEngine.DEFAULT_DEPLOY_MIN_SEPARATION, "deploy_min_separation parity")
+	var golden := {
+		Vector2i(25, 7): &"hill", Vector2i(26, 7): &"hill", Vector2i(27, 5): &"tower",
+		Vector2i(28, 8): &"dust_storm", Vector2i(29, 8): &"dust_storm", Vector2i(29, 7): &"dust_storm",
+	}
 	var got := m.terrain_map()         # Vector2i -> StringName kind id
-	_check_eq(got.size(), want.size(), "dead_sea_bottom cell count matches _place_terrain")
+	_check_eq(got.size(), golden.size(), "dead_sea_bottom has the six historical cells")
 	var cells_ok := true
-	for hex in want:
-		if got.get(hex, &"") != want[hex]:
+	for hex in golden:
+		if got.get(hex, &"") != golden[hex]:
 			cells_ok = false
-	_check(cells_ok, "every dead_sea_bottom cell matches _place_terrain hex+kind")
+	_check(cells_ok, "every dead_sea_bottom cell matches the golden hex+kind layout")
 
 
 ## Mods layer over core: add a kind + a map, override a core kind in place, and
@@ -1636,6 +1640,59 @@ func _test_map_catalog_roundtrip() -> void:
 			"MapLibrary facade resolves a terrain kind")
 
 
+## apply_map adopts a MapDef's board size, deploy band, terrain, and id — and
+## setup/setup_fleet run it before placement so the nudge respects the map. The
+## deploy band is now a per-map instance var (§0.7), and map_id + deploy params
+## survive a save (§0.9).
+func _test_apply_map() -> void:
+	# setup() applies the default map (dead_sea_bottom): board + terrain + id.
+	var eng := TurnEngine.new()
+	eng.setup(1)
+	_check_eq(eng.map_id, TurnEngine.DEFAULT_MAP_ID, "setup applies the default map id")
+	_check_eq(eng.terrain.size(), 6, "default map lays the six dead_sea_bottom cells")
+	_check_eq(eng.terrain.get(Vector2i(27, 5), &""), &"tower", "the tower cell is placed")
+	_check_eq(eng.map_cols, 48, "default map board width")
+	_check_eq(eng.deploy_zone_cols, TurnEngine.DEFAULT_DEPLOY_ZONE_COLS, "default deploy band")
+
+	# apply_map with a custom-sized map overrides board + deploy + terrain at once.
+	var custom := MapDef.new()
+	custom.id = &"tiny_arena"
+	custom.cols = 20
+	custom.rows = 16
+	custom.deploy_zone_cols = 6
+	custom.deploy_min_separation = 3
+	custom.terrain.assign([ { "hex": Vector2i(4, 4), "type": &"hill" } ])
+	var arena := TurnEngine.new()
+	arena.apply_map(custom)
+	_check_eq(arena.map_id, &"tiny_arena", "apply_map sets the map id")
+	_check_eq(arena.map_cols, 20, "apply_map sets board width")
+	_check_eq(arena.map_rows, 16, "apply_map sets board height")
+	_check_eq(arena.deploy_zone_cols, 6, "apply_map sets the deploy band")
+	_check_eq(arena.deploy_min_separation, 3, "apply_map sets the min separation")
+	_check_eq(arena.terrain.size(), 1, "apply_map replaces the terrain layout")
+	_check_eq(arena.terrain.get(Vector2i(4, 4), &""), &"hill", "custom terrain cell placed")
+	# The custom band is enforced through the instance var, not the old const:
+	# every legal side-0 deploy hex sits in columns 0..5.
+	var legal := arena.legal_deploy_hexes(0)
+	var all_in_band := not legal.is_empty()
+	for h in legal:
+		if h.x >= 6:
+			all_in_band = false
+	_check(all_in_band, "custom deploy band (cols 0..5) enforced via the instance var")
+
+	# map_id + deploy params survive a save round-trip (§0.9).
+	var rt := SaveGame.dict_to_engine(SaveGame.engine_to_dict(arena))
+	_check_eq(rt.map_id, &"tiny_arena", "map_id round-trips through a save")
+	_check_eq(rt.deploy_zone_cols, 6, "deploy_zone_cols round-trips through a save")
+	_check_eq(rt.deploy_min_separation, 3, "deploy_min_separation round-trips through a save")
+
+	# setup_fleet selects a map by id.
+	var eng2 := TurnEngine.new()
+	eng2.setup_fleet([ { "ship_id": &"helium_scout", "side": 0, "hex": Vector2i(5, 5), "facing": 0 } ],
+			1, &"dead_sea_bottom")
+	_check_eq(eng2.map_id, &"dead_sea_bottom", "setup_fleet applies the named map")
+
+
 ## Step 5 (save hardening): a save naming a ship the active catalog no longer
 ## provides (a removed mod) declines cleanly — no half-built engine — and reports
 ## why. Restores the default catalog afterward so later tests see core data.
@@ -1689,7 +1746,7 @@ func _test_deployment_rules() -> void:
 			"off-board deploy hex is rejected")
 
 	# Outside the band (eastern half) is rejected even with no enemy nearby.
-	_check(not e.is_legal_deploy_hex(Vector2i(TurnEngine.DEPLOY_ZONE_COLS, 12), 0),
+	_check(not e.is_legal_deploy_hex(Vector2i(TurnEngine.DEFAULT_DEPLOY_ZONE_COLS, 12), 0),
 			"hex past the deploy band is rejected for side 0")
 
 	# Occupied by another (non-moving) ship is rejected; the same hex is fine when
@@ -1709,11 +1766,11 @@ func _test_deployment_rules() -> void:
 	wide.setup_fleet([
 		{ "ship_id": &"helium_scout", "side": 0, "hex": Vector2i(2, 12), "facing": 1 },
 		{ "ship_id": &"zodanga_cruiser", "side": 1,
-			"hex": Vector2i(TurnEngine.DEPLOY_ZONE_COLS + 2, 12), "facing": 4 },
+			"hex": Vector2i(TurnEngine.DEFAULT_DEPLOY_ZONE_COLS + 2, 12), "facing": 4 },
 	], 7)
 	var foe := wide.ships[1]
-	var inside := foe.hex - Vector2i(TurnEngine.DEPLOY_MIN_SEPARATION - 1, 0)
-	var beyond := foe.hex - Vector2i(TurnEngine.DEPLOY_MIN_SEPARATION, 0)
+	var inside := foe.hex - Vector2i(TurnEngine.DEFAULT_DEPLOY_MIN_SEPARATION - 1, 0)
+	var beyond := foe.hex - Vector2i(TurnEngine.DEFAULT_DEPLOY_MIN_SEPARATION, 0)
 	if wide._in_deploy_band(inside, 0):
 		_check(not wide.is_legal_deploy_hex(inside, 0),
 				"hex within DEPLOY_MIN_SEPARATION of an enemy is rejected")
@@ -1726,7 +1783,7 @@ func _test_deployment_rules() -> void:
 	_check(hexes.size() > 0, "legal_deploy_hexes finds room for the player")
 	var all_legal := true
 	for h in hexes:
-		if not e.is_legal_deploy_hex(h, 0, player) or h.x >= TurnEngine.DEPLOY_ZONE_COLS:
+		if not e.is_legal_deploy_hex(h, 0, player) or h.x >= TurnEngine.DEFAULT_DEPLOY_ZONE_COLS:
 			all_legal = false
 	_check(all_legal, "every hex from legal_deploy_hexes is legal and in-band")
 
@@ -2166,7 +2223,7 @@ func _test_save_legacy_terrain_migration() -> void:
 	junk["terrain"] = { Vector2i(4, 4): 99 }
 	_check_eq(SaveGame.dict_to_engine(junk).terrain[Vector2i(4, 4)], TerrainDef.NONE,
 			"an unknown legacy terrain int becomes the empty sentinel")
-	# A post-T3 save (string terrain from _place_terrain) round-trips unchanged.
+	# A post-T3 save (string terrain from apply_map) round-trips unchanged.
 	var modern := SaveGame.dict_to_engine(SaveGame.engine_to_dict(eng))
 	_check_eq(modern.terrain, eng.terrain, "post-T3 string terrain round-trips unchanged")
 
