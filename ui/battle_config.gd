@@ -15,6 +15,13 @@ static var pending: bool = false
 ## one menu choice carries across all paths. Defaults to the balanced DWAR.
 static var difficulty: int = ShipAI.Difficulty.DWAR
 
+## Chosen map (a MapLibrary id), set on the main menu and honoured by every
+## battle the map boots — Quick Engagement or a built fleet. Like `difficulty`,
+## it is NOT touched by clear()/set_battle() so one menu choice carries across
+## all launch paths. A resumed/loaded save uses the map baked into the save, not
+## this. Defaults to the bundled dead_sea_bottom.
+static var map_id: StringName = TurnEngine.DEFAULT_MAP_ID
+
 ## Suspend/resume: leaving a battle for the menu auto-saves it here; the menu's
 ## "Resume Battle" button sets `resume` and the map reloads it on boot.
 const RESUME_PATH := "user://resume.flyersave"

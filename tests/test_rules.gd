@@ -81,6 +81,14 @@ func _init() -> void:
 	_test_catalog_validation()
 	_test_catalog_mods()
 	_test_save_missing_dependency()
+
+	_suite("Map catalog")
+	_test_map_catalog_parity()
+	_test_map_catalog_layering()
+	_test_map_catalog_referential_integrity()
+	_test_map_catalog_roundtrip()
+	_test_apply_map()
+	_test_mod_asset_loading()
 	_test_deployment_rules()
 	_test_side_victory()
 	_test_fleet_cadence()
@@ -106,6 +114,7 @@ func _init() -> void:
 	_test_save_roundtrip()
 	_test_save_rng_determinism()
 	_test_save_file_and_rejects()
+	_test_save_legacy_terrain_migration()
 
 	_suite("View projection")
 	_test_view_projection()
@@ -180,15 +189,15 @@ func _test_view_projection() -> void:
 func _test_model_baker() -> void:
 	var tm := ModelBaker.new()
 	tm.scan_assets()
-	# Self-consistency: a type reports a model exactly when it loaded >= 1 variant.
-	for type in [TerrainDef.Type.HILL, TerrainDef.Type.TOWER]:
-		_check(tm.has_model(type) == (tm.variant_count(type) > 0),
-				"has_model agrees with variant_count for type %d" % type)
+	# Self-consistency: a kind reports a model exactly when it loaded >= 1 variant.
+	for kind in [&"hill", &"tower"]:
+		_check(tm.has_model(kind) == (tm.variant_count(kind) > 0),
+				"has_model agrees with variant_count for kind '%s'" % kind)
 	# Shipped assets load: a hill (assets/terrain/), a tower building (assets/buildings/),
 	# and the three ship classes (assets/ships/). Classes without a model fall back.
-	_check(tm.has_model(TerrainDef.Type.HILL), "shipped hill model is loaded")
-	_check(tm.variant_count(TerrainDef.Type.HILL) >= 1, "at least one hill variant present")
-	_check(tm.has_model(TerrainDef.Type.TOWER), "shipped tower building model is loaded")
+	_check(tm.has_model(&"hill"), "shipped hill model is loaded")
+	_check(tm.variant_count(&"hill") >= 1, "at least one hill variant present")
+	_check(tm.has_model(&"tower"), "shipped tower building model is loaded")
 	_check(tm.has_model(&"scout"), "scout ship model is loaded")
 	_check(tm.has_model(&"cruiser"), "cruiser ship model is loaded")
 	_check(tm.has_model(&"fighter"), "fighter ship model is loaded")
@@ -209,24 +218,24 @@ func _test_model_baker() -> void:
 ## so the map draws the procedural puffs, the shipped sheet in assets/terrain/ loads, and
 ## the frame clock + atlas math must loop on frame count and map indices to grid cells.
 func _test_dust_sprites() -> void:
-	# Empty loader (never scanned) → procedural fallback path.
+	# Empty loader (never scanned) → procedural fallback path for any kind.
 	var empty := DustSprites.new()
-	_check(not empty.has_sprites(), "unscanned loader has no sprites → procedural fallback")
-	_check(empty.variant_count() == 0, "variant_count is 0 before scanning")
+	_check(not empty.has_sprites(&"dust_storm"), "unscanned loader has no sprites → procedural fallback")
+	_check(empty.variant_count(&"dust_storm") == 0, "variant_count is 0 before scanning")
 
-	# Scanned loader picks up the shipped duststorm_1 sheet.
+	# Scanned loader picks up the shipped dust_storm sheet, keyed by kind id.
 	var ds := DustSprites.new()
 	ds.scan_assets()
-	_check(ds.has_sprites(), "shipped dust sheet is loaded")
-	_check(ds.variant_count() >= 1, "at least one dust variant present")
+	_check(ds.has_sprites(&"dust_storm"), "shipped dust_storm sheet is loaded by kind")
+	_check(ds.variant_count(&"dust_storm") >= 1, "at least one dust_storm variant present")
+	_check(not ds.has_sprites(&"hill"), "a mesh kind (hill) reports no sprite sheets")
 
-	# Pure playback math on a synthetic 5×5, 24-frame sheet (appended past any real ones).
-	var v := ds.variant_count()
-	ds._variants.append({"cols": 5, "rows": 5, "frames": 24, "frame_size": 128, "fps": 24.0})
-	_check(ds.frame_for_time(v, 0.0) == 0, "t=0 → frame 0")
-	_check(ds.frame_for_time(v, 0.5) == 12, "0.5s at 24fps → frame 12")
-	_check(ds.frame_for_time(v, 1.0) == 0, "24 frames at 24fps loop back to 0 after 1s")
-	_check(ds.frame_region(v, 6) == Rect2(128, 128, 128, 128), "frame 6 maps to grid cell (1,1)")
+	# Pure playback math on a synthetic 5×5, 24-frame sheet under a test kind.
+	ds._by_kind[&"_test_kind"] = [{"cols": 5, "rows": 5, "frames": 24, "frame_size": 128, "fps": 24.0}]
+	_check(ds.frame_for_time(&"_test_kind", 0, 0.0) == 0, "t=0 → frame 0")
+	_check(ds.frame_for_time(&"_test_kind", 0, 0.5) == 12, "0.5s at 24fps → frame 12")
+	_check(ds.frame_for_time(&"_test_kind", 0, 1.0) == 0, "24 frames at 24fps loop back to 0 after 1s")
+	_check(ds.frame_region(&"_test_kind", 0, 6) == Rect2(128, 128, 128, 128), "frame 6 maps to grid cell (1,1)")
 
 
 # ---------------------------------------------------------------------------
@@ -767,19 +776,19 @@ func _test_hex_line() -> void:
 
 func _test_terrain_los() -> void:
 	# Hill at an intermediate hex blocks LOS.
-	var hill := { Vector2i(0, -1): TerrainDef.Type.HILL }
+	var hill := { Vector2i(0, -1): &"hill" }
 	_check(not TerrainDef.los_clear(Vector2i(0, 0), Vector2i(0, -3), hill),
 			"hill at (0,-1) blocks LOS from (0,0) to (0,-3)")
 	# Hill at the target hex does NOT block — only intermediates count.
-	var hill_target := { Vector2i(0, -3): TerrainDef.Type.HILL }
+	var hill_target := { Vector2i(0, -3): &"hill" }
 	_check(TerrainDef.los_clear(Vector2i(0, 0), Vector2i(0, -3), hill_target),
 			"hill at the target hex does not block LOS (endpoint excluded)")
 	# Tower behaves like a hill.
-	var tower := { Vector2i(0, -1): TerrainDef.Type.TOWER }
+	var tower := { Vector2i(0, -1): &"tower" }
 	_check(not TerrainDef.los_clear(Vector2i(0, 0), Vector2i(0, -3), tower),
 			"ruined tower in the path blocks LOS")
 	# Dust storm does NOT block LOS (only imposes a spotting penalty).
-	var dust := { Vector2i(0, -1): TerrainDef.Type.DUST_STORM }
+	var dust := { Vector2i(0, -1): &"dust_storm" }
 	_check(TerrainDef.los_clear(Vector2i(0, 0), Vector2i(0, -3), dust),
 			"dust storm in the path does not block LOS")
 	# Empty terrain: LOS always clear.
@@ -789,19 +798,19 @@ func _test_terrain_los() -> void:
 
 func _test_terrain_dust() -> void:
 	# One dust hex at the intermediate → penalty 1.
-	var dust_mid := { Vector2i(0, -1): TerrainDef.Type.DUST_STORM }
+	var dust_mid := { Vector2i(0, -1): &"dust_storm" }
 	_check_eq(TerrainDef.dust_along(Vector2i(0, 0), Vector2i(0, -2), dust_mid), 1,
 			"dust at intermediate hex → penalty 1")
 	# Dust at the target hex also counts.
-	var dust_target := { Vector2i(0, -2): TerrainDef.Type.DUST_STORM }
+	var dust_target := { Vector2i(0, -2): &"dust_storm" }
 	_check_eq(TerrainDef.dust_along(Vector2i(0, 0), Vector2i(0, -2), dust_target), 1,
 			"dust at the target hex counts (penalty 1)")
 	# Dust at the firer's own hex is NOT counted.
-	var dust_firer := { Vector2i(0, 0): TerrainDef.Type.DUST_STORM }
+	var dust_firer := { Vector2i(0, 0): &"dust_storm" }
 	_check_eq(TerrainDef.dust_along(Vector2i(0, 0), Vector2i(0, -2), dust_firer), 0,
 			"dust at the firer's own hex is not counted")
 	# Hill along path contributes 0 penalty (blocks LOS but no dust penalty).
-	var hill := { Vector2i(0, -1): TerrainDef.Type.HILL }
+	var hill := { Vector2i(0, -1): &"hill" }
 	_check_eq(TerrainDef.dust_along(Vector2i(0, 0), Vector2i(0, -2), hill), 0,
 			"hill gives no dust penalty")
 
@@ -811,13 +820,13 @@ func _test_terrain_fire_preview() -> void:
 	scout.apply_allocation({ "guns": [0], "engine": 0, "damage_control": 0 })
 	# Turret at range 2 dead ahead bears (360° mount).
 	# Hill at the intermediate hex (0,-1) should report LOS blocked.
-	var hill_terrain := { Vector2i(0, -1): TerrainDef.Type.HILL }
+	var hill_terrain := { Vector2i(0, -1): &"hill" }
 	var pv_blocked := scout.fire_preview(0, Vector2i(0, -2), hill_terrain)
 	_check(not pv_blocked["bears"], "fire_preview: hill in path → does not bear")
 	_check_eq(pv_blocked["reason"], "LOS blocked",
 			"fire_preview reason is 'LOS blocked' with hill in path")
 	# Dust at the intermediate hex: shot bears but to-hit is raised by 1.
-	var dust_terrain := { Vector2i(0, -1): TerrainDef.Type.DUST_STORM }
+	var dust_terrain := { Vector2i(0, -1): &"dust_storm" }
 	var pv_dust := scout.fire_preview(0, Vector2i(0, -2), dust_terrain)
 	_check(pv_dust["bears"], "fire_preview: dust does not block the shot")
 	_check_eq(pv_dust["dust_penalty"], 1, "fire_preview reports dust_penalty 1")
@@ -1342,6 +1351,15 @@ func _write_json(path: String, data: Dictionary) -> void:
 	f.store_string(JSON.stringify(data))
 	f.close()
 
+## Copy a file's raw bytes to `dst` (parent dirs created). Used to stage a mod
+## pack from shipped assets so the copy carries NO .import sidecar — exactly what
+## a downloaded pack looks like on a player's disk.
+func _copy_file(src: String, dst: String) -> void:
+	DirAccess.make_dir_recursive_absolute(dst.get_base_dir())
+	var f := FileAccess.open(dst, FileAccess.WRITE)
+	f.store_buffer(FileAccess.get_file_as_bytes(src))
+	f.close()
+
 ## Recursively delete a directory (no built-in for this in Godot).
 func _purge_dir(path: String) -> void:
 	if not DirAccess.dir_exists_absolute(path):
@@ -1455,6 +1473,287 @@ func _test_catalog_mods() -> void:
 	_purge_dir(TEST_MOD_ROOT)
 
 
+# ---------------------------------------------------------------------------
+# Map / terrain catalog (MAP_MODDING.md T2). The catalog is purely additive in
+# this pass — the running engine still uses the int-enum TerrainDef — so these
+# tests exercise the new classes directly. The parity test is the bridge that
+# lets T3 swap TerrainDef for the catalog with provably zero behaviour drift.
+# ---------------------------------------------------------------------------
+
+## The bundled terrain.json + maps.json reproduce today's hard-coded TerrainDef
+## rules, ModelBaker/DustSprites tuning, and the historical terrain layout EXACTLY.
+func _test_map_catalog_parity() -> void:
+	var cat := MapCatalog.new("res://__no_such_mod_dir__/")
+
+	# Concrete core-kind values — these are exactly what the pre-catalog TerrainDef
+	# hard-coded, so this pins terrain.json to the original design.
+	_check(cat.kind(&"hill").blocks_los and cat.kind(&"tower").blocks_los,
+			"hill and tower block LOS")
+	_check(not cat.kind(&"dust_storm").blocks_los, "dust does not block LOS")
+	_check_eq(cat.kind(&"dust_storm").spot_penalty, 1, "dust imposes a +1 spotting penalty")
+	_check_eq(cat.kind(&"hill").spot_penalty, 0, "hill imposes no spotting penalty")
+	_check_eq(cat.kind(&"hill").display_name, "Hill", "hill display name")
+	_check_eq(cat.kind(&"dust_storm").display_name, "Dust", "dust display name")
+	_check(cat.kind(&"hill").render_color().is_equal_approx(Color(0.50, 0.35, 0.15, 0.80)),
+			"hill fill colour")
+	_check(is_equal_approx(cat.kind(&"tower").render_height(), 1.5), "tower massing height")
+	_check_eq(cat.kind(&"hill").render_type(), "model", "hill renders as a mesh")
+	_check_eq(cat.kind(&"dust_storm").render_type(), "sprite", "dust renders as a sprite")
+	_check_eq(cat.kind(&"tower").category, "building", "tower is categorised as a building")
+	_check(is_equal_approx(cat.kind(&"tower").render_footprint(), 0.42), "tower has a narrow footprint")
+	_check(is_equal_approx(cat.kind(&"hill").render_footprint(), 1.0), "hill fills its hex")
+
+	# The TerrainDef facade the engine/AI call now delegates to the catalog, and
+	# the empty-string sentinel resolves as "no terrain".
+	MapLibrary.reset_default()
+	_check(TerrainDef.blocks_los(&"hill") and not TerrainDef.blocks_los(&"dust_storm"),
+			"TerrainDef.blocks_los delegates to the catalog")
+	_check_eq(TerrainDef.spot_penalty(&"dust_storm"), 1, "TerrainDef.spot_penalty delegates")
+	_check(not TerrainDef.blocks_los(&""), "the empty sentinel is not terrain")
+	_check_eq(TerrainDef.spot_penalty(&""), 0, "the empty sentinel has no spotting penalty")
+	_check(TerrainDef.is_sprite(&"dust_storm") and not TerrainDef.is_sprite(&"hill"),
+			"TerrainDef.is_sprite reflects render type")
+
+	# Model span/anchor cross-checked against the live ModelBaker (real drift
+	# guard, now keyed by kind id); frame/look_y/dir against the authored literals.
+	var mb := ModelBaker.new()
+	mb.scan_assets()
+	for kid in [&"hill", &"tower"]:
+		var mdl: Dictionary = cat.kind(kid).render["model"]
+		_check(is_equal_approx(mdl["span"], mb.span(kid)), "%s model span matches ModelBaker" % kid)
+		_check(is_equal_approx(mdl["anchor"], mb.anchor(kid)), "%s model anchor matches ModelBaker" % kid)
+	mb.free()
+	var hill_model: Dictionary = cat.kind(&"hill").render["model"]
+	_check_eq(hill_model["dir"], "terrain", "hill model dir")
+	_check(is_equal_approx(hill_model["frame"], 2.2), "hill model frame literal")
+	_check(is_equal_approx(hill_model["look_y"], 0.3), "hill model look_y literal")
+	# Dust sprite tuning mirrors DustSprites' constants.
+	var dust_sprite: Dictionary = cat.kind(&"dust_storm").render["sprite"]
+	_check_eq(dust_sprite["prefix"], "duststorm", "dust sprite prefix")
+	_check(is_equal_approx(dust_sprite["span"], DustSprites.FRAME_SPAN_UNITS),
+			"dust sprite span matches DustSprites")
+	_check(is_equal_approx(dust_sprite["anchor"], DustSprites.GROUND_ANCHOR),
+			"dust sprite anchor matches DustSprites")
+
+	# dead_sea_bottom reproduces the map-size/deploy consts and the historical
+	# _place_terrain() layout. That code is gone (apply_map is the source now), so
+	# the six cells are pinned here as the golden reference.
+	_check(cat.has_map(&"dead_sea_bottom"), "maps.json provides dead_sea_bottom")
+	var m := cat.map(&"dead_sea_bottom")
+	_check_eq(m.cols, 48, "map cols parity")
+	_check_eq(m.rows, 48, "map rows parity")
+	_check_eq(m.deploy_zone_cols, TurnEngine.DEFAULT_DEPLOY_ZONE_COLS, "deploy_zone_cols parity")
+	_check_eq(m.deploy_min_separation, TurnEngine.DEFAULT_DEPLOY_MIN_SEPARATION, "deploy_min_separation parity")
+	var golden := {
+		Vector2i(25, 7): &"hill", Vector2i(26, 7): &"hill", Vector2i(27, 5): &"tower",
+		Vector2i(28, 8): &"dust_storm", Vector2i(29, 8): &"dust_storm", Vector2i(29, 7): &"dust_storm",
+	}
+	var got := m.terrain_map()         # Vector2i -> StringName kind id
+	_check_eq(got.size(), golden.size(), "dead_sea_bottom has the six historical cells")
+	var cells_ok := true
+	for hex in golden:
+		if got.get(hex, &"") != golden[hex]:
+			cells_ok = false
+	_check(cells_ok, "every dead_sea_bottom cell matches the golden hex+kind layout")
+
+
+## Mods layer over core: add a kind + a map, override a core kind in place, and
+## resolve asset origin per pack. Deterministic order across loads.
+func _test_map_catalog_layering() -> void:
+	_purge_dir(TEST_MOD_ROOT)
+	var core := MapCatalog.new("res://__no_such_mod_dir__/")
+	var core_kinds := core.kind_ids().size()
+	var core_maps := core.map_ids().size()
+
+	_write_json(TEST_MOD_ROOT + "/a_add/terrain.json", { "terrain": [
+		{ "id": "crystal", "display_name": "Crystal Spire", "blocks_los": true } ] })
+	_write_json(TEST_MOD_ROOT + "/a_add/maps.json", { "maps": [
+		{ "id": "crystal_flats", "display_name": "Crystal Flats", "cols": 30, "rows": 30,
+			"terrain": [ { "hex": [5, 5], "type": "crystal" }, { "hex": [6, 5], "type": "hill" } ] } ] })
+	# Override a core kind (dust penalty way up) keeping its slot.
+	_write_json(TEST_MOD_ROOT + "/b_override/terrain.json", { "terrain": [
+		{ "id": "dust_storm", "display_name": "Dust", "blocks_los": false, "spot_penalty": 5 } ] })
+
+	var cat := MapCatalog.new(TEST_MOD_ROOT + "/")
+	_check(cat.has_kind(&"crystal"), "mod-added terrain kind is present")
+	_check(cat.kind(&"crystal").blocks_los, "mod kind keeps its authored rules")
+	_check_eq(cat.kind_ids().size(), core_kinds + 1, "mod adds exactly one kind")
+	_check(cat.has_map(&"crystal_flats"), "mod map loads (its kinds resolve across packs)")
+	_check_eq(cat.map_ids().size(), core_maps + 1, "mod adds exactly one map")
+	_check_eq(cat.kind(&"dust_storm").spot_penalty, 5, "mod override retunes dust in place")
+	_check_eq(cat.kind_ids().find(&"dust_storm"), core.kind_ids().find(&"dust_storm"),
+			"overridden kind keeps its original ordering slot")
+	# Asset origin travels with the kind (§0.3): mod → pack root, core → res://.
+	_check_eq(cat.kind(&"crystal").source_root, TEST_MOD_ROOT + "/a_add/",
+			"mod kind carries its pack root for asset resolution")
+	_check_eq(cat.kind(&"hill").source_root, "res://", "core kind resolves against res://")
+	var a := MapCatalog.new(TEST_MOD_ROOT + "/").map_ids()
+	var b := MapCatalog.new(TEST_MOD_ROOT + "/").map_ids()
+	var same := a.size() == b.size()
+	for i in a.size():
+		if a[i] != b[i]:
+			same = false
+	_check(same, "two loads of the same mod set yield identical map order")
+	_purge_dir(TEST_MOD_ROOT)
+
+
+## A map referencing an unknown kind is dropped WHOLE (its LOS layout would be
+## silently wrong); malformed entries are rejected at validation. Core survives
+## every bad mod. (ERROR lines below are EXPECTED — these deliberately fail.)
+func _test_map_catalog_referential_integrity() -> void:
+	_purge_dir(TEST_MOD_ROOT)
+	_write_json(TEST_MOD_ROOT + "/z_bad/maps.json", { "maps": [
+		{ "id": "ghost_field", "display_name": "Ghost", "cols": 20, "rows": 20,
+			"terrain": [ { "hex": [1, 1], "type": "hill" },
+				{ "hex": [2, 2], "type": "no_such_kind" } ] },
+		{ "id": "good_field", "display_name": "Good", "cols": 20, "rows": 20,
+			"terrain": [ { "hex": [3, 3], "type": "hill" } ] } ] })
+	var cat := MapCatalog.new(TEST_MOD_ROOT + "/")
+	_check(not cat.has_map(&"ghost_field"), "map citing an unknown kind is dropped whole")
+	_check(cat.has_map(&"good_field"), "a valid map in the same pack survives")
+	_check(cat.has_map(&"dead_sea_bottom"), "core maps intact despite a bad mod map")
+	_purge_dir(TEST_MOD_ROOT)
+
+	_write_json(TEST_MOD_ROOT + "/z_bad2/maps.json", { "maps": [
+		{ "id": "no_rows", "display_name": "x", "cols": 10, "terrain": [] } ] })
+	_check(not MapCatalog.new(TEST_MOD_ROOT + "/").has_map(&"no_rows"),
+			"map missing 'rows' is rejected at validation")
+	_purge_dir(TEST_MOD_ROOT)
+
+	_write_json(TEST_MOD_ROOT + "/z_bad3/terrain.json", { "terrain": [ { "id": "nameless" } ] })
+	var cat3 := MapCatalog.new(TEST_MOD_ROOT + "/")
+	_check(not cat3.has_kind(&"nameless"), "kind missing display_name is rejected")
+	_check(cat3.has_kind(&"hill"), "core kinds intact despite a malformed mod kind")
+	_purge_dir(TEST_MOD_ROOT)
+
+
+## Every core kind and map survives serialization, and the facade reads the same
+## catalog (mirrors _test_catalog_migration for ships).
+func _test_map_catalog_roundtrip() -> void:
+	var cat := MapCatalog.new("res://__no_such_mod_dir__/")
+	var kinds_ok := true
+	for kid in cat.kind_ids():
+		var k := cat.kind(kid)
+		if JSON.stringify(TerrainKindDef.from_dict(k.to_dict()).to_dict()) != JSON.stringify(k.to_dict()):
+			kinds_ok = false
+	_check(kinds_ok, "every core terrain kind survives a to_dict→from_dict round-trip")
+	var maps_ok := true
+	for mid in cat.map_ids():
+		var mm := cat.map(mid)
+		if JSON.stringify(MapDef.from_dict(mm.to_dict()).to_dict()) != JSON.stringify(mm.to_dict()):
+			maps_ok = false
+	_check(maps_ok, "every core map survives a to_dict→from_dict round-trip")
+	MapLibrary.reset_default()
+	_check_eq(MapLibrary.map(&"dead_sea_bottom").display_name, "Dead Sea Bottom",
+			"MapLibrary facade resolves a map through the active catalog")
+	_check_eq(MapLibrary.kind(&"hill").display_name, "Hill",
+			"MapLibrary facade resolves a terrain kind")
+
+
+## apply_map adopts a MapDef's board size, deploy band, terrain, and id — and
+## setup/setup_fleet run it before placement so the nudge respects the map. The
+## deploy band is now a per-map instance var (§0.7), and map_id + deploy params
+## survive a save (§0.9).
+func _test_apply_map() -> void:
+	# setup() applies the default map (dead_sea_bottom): board + terrain + id.
+	var eng := TurnEngine.new()
+	eng.setup(1)
+	_check_eq(eng.map_id, TurnEngine.DEFAULT_MAP_ID, "setup applies the default map id")
+	_check_eq(eng.terrain.size(), 6, "default map lays the six dead_sea_bottom cells")
+	_check_eq(eng.terrain.get(Vector2i(27, 5), &""), &"tower", "the tower cell is placed")
+	_check_eq(eng.map_cols, 48, "default map board width")
+	_check_eq(eng.deploy_zone_cols, TurnEngine.DEFAULT_DEPLOY_ZONE_COLS, "default deploy band")
+
+	# apply_map with a custom-sized map overrides board + deploy + terrain at once.
+	var custom := MapDef.new()
+	custom.id = &"tiny_arena"
+	custom.cols = 20
+	custom.rows = 16
+	custom.deploy_zone_cols = 6
+	custom.deploy_min_separation = 3
+	custom.terrain.assign([ { "hex": Vector2i(4, 4), "type": &"hill" } ])
+	var arena := TurnEngine.new()
+	arena.apply_map(custom)
+	_check_eq(arena.map_id, &"tiny_arena", "apply_map sets the map id")
+	_check_eq(arena.map_cols, 20, "apply_map sets board width")
+	_check_eq(arena.map_rows, 16, "apply_map sets board height")
+	_check_eq(arena.deploy_zone_cols, 6, "apply_map sets the deploy band")
+	_check_eq(arena.deploy_min_separation, 3, "apply_map sets the min separation")
+	_check_eq(arena.terrain.size(), 1, "apply_map replaces the terrain layout")
+	_check_eq(arena.terrain.get(Vector2i(4, 4), &""), &"hill", "custom terrain cell placed")
+	# The custom band is enforced through the instance var, not the old const:
+	# every legal side-0 deploy hex sits in columns 0..5.
+	var legal := arena.legal_deploy_hexes(0)
+	var all_in_band := not legal.is_empty()
+	for h in legal:
+		if h.x >= 6:
+			all_in_band = false
+	_check(all_in_band, "custom deploy band (cols 0..5) enforced via the instance var")
+
+	# map_id + deploy params survive a save round-trip (§0.9).
+	var rt := SaveGame.dict_to_engine(SaveGame.engine_to_dict(arena))
+	_check_eq(rt.map_id, &"tiny_arena", "map_id round-trips through a save")
+	_check_eq(rt.deploy_zone_cols, 6, "deploy_zone_cols round-trips through a save")
+	_check_eq(rt.deploy_min_separation, 3, "deploy_min_separation round-trips through a save")
+
+	# setup_fleet selects a map by id.
+	var eng2 := TurnEngine.new()
+	eng2.setup_fleet([ { "ship_id": &"helium_scout", "side": 0, "hex": Vector2i(5, 5), "facing": 0 } ],
+			1, &"dead_sea_bottom")
+	_check_eq(eng2.map_id, &"dead_sea_bottom", "setup_fleet applies the named map")
+
+	# A second bundled map is in the catalog and selectable (the picker lists it).
+	_check(MapLibrary.has_map(&"storm_front"), "the second core map storm_front is catalogued")
+	_check(MapLibrary.map_ids().size() >= 2, "the catalog offers at least two maps to pick from")
+	var eng3 := TurnEngine.new()
+	eng3.setup_rosters([&"helium_scout"], [&"zodanga_cruiser"], 1, &"storm_front")
+	_check_eq(eng3.map_id, &"storm_front", "setup_rosters applies the storm_front map")
+	_check_eq(eng3.terrain.size(), 7, "storm_front lays its own seven-cell layout")
+
+
+## T5: a mod pack in user://mods/ ships its own glb + sprite assets with no
+## .import sidecar. ModelBaker imports the glb at runtime via GLTFDocument (the
+## T1-spike path), and DustSprites loads the png via Image — so a player who
+## drops a pack in gets its custom 3D terrain and animated effects.
+func _test_mod_asset_loading() -> void:
+	_purge_dir(TEST_MOD_ROOT)
+	var pack := TEST_MOD_ROOT + "/glbpack"
+	_write_json(pack + "/terrain.json", { "terrain": [
+		{ "id": "mod_mesa", "display_name": "Mod Mesa", "blocks_los": true,
+			"render": { "color": [0.4, 0.3, 0.2, 0.9], "height": 0.6,
+				"model": { "dir": "terrain", "prefix": "mesa",
+					"frame": 2.2, "span": 2.0, "look_y": 0.3, "anchor": 0.58 } } },
+		{ "id": "mod_haze", "display_name": "Mod Haze", "spot_penalty": 1,
+			"render": { "color": [0.8, 0.7, 0.3, 0.4],
+				"sprite": { "prefix": "haze", "span": 1.8, "anchor": 0.62 } } } ] })
+	# Stage the pack's assets from shipped files (raw bytes → no .import sidecar).
+	_copy_file("res://assets/terrain/hill_1.glb", pack + "/assets/terrain/mesa_1.glb")
+	_copy_file("res://assets/terrain/duststorm_1.png", pack + "/assets/terrain/haze_1.png")
+	_copy_file("res://assets/terrain/duststorm_1.json", pack + "/assets/terrain/haze_1.json")
+
+	# Make a catalog over the pack the active one so the catalog-driven loaders
+	# see the mod kinds and their pack-relative asset roots.
+	MapLibrary.use_catalog(MapCatalog.new(TEST_MOD_ROOT + "/"))
+	_check_eq(MapLibrary.kind(&"mod_mesa").source_root, pack + "/", "mod kind carries its pack root")
+
+	# glb → runtime glTF import (GLTFDocument), the capability the T1 spike proved.
+	var mb := ModelBaker.new()
+	mb.scan_assets()
+	_check(mb.has_model(&"mod_mesa"), "mod glb loads at runtime from user:// via GLTFDocument")
+	_check(mb.variant_count(&"mod_mesa") >= 1, "the mod mesh variant is registered")
+	_check(mb.has_model(&"hill"), "core res:// models still load alongside mod ones")
+	mb.free()
+
+	# sprite sheet → runtime png load (Image).
+	var ds := DustSprites.new()
+	ds.scan_assets()
+	_check(ds.has_sprites(&"mod_haze"), "mod sprite sheet loads at runtime from user:// via Image")
+	_check(ds.variant_count(&"mod_haze") >= 1, "the mod sprite variant is registered")
+
+	MapLibrary.reset_default()
+	_purge_dir(TEST_MOD_ROOT)
+
+
 ## Step 5 (save hardening): a save naming a ship the active catalog no longer
 ## provides (a removed mod) declines cleanly — no half-built engine — and reports
 ## why. Restores the default catalog afterward so later tests see core data.
@@ -1508,7 +1807,7 @@ func _test_deployment_rules() -> void:
 			"off-board deploy hex is rejected")
 
 	# Outside the band (eastern half) is rejected even with no enemy nearby.
-	_check(not e.is_legal_deploy_hex(Vector2i(TurnEngine.DEPLOY_ZONE_COLS, 12), 0),
+	_check(not e.is_legal_deploy_hex(Vector2i(TurnEngine.DEFAULT_DEPLOY_ZONE_COLS, 12), 0),
 			"hex past the deploy band is rejected for side 0")
 
 	# Occupied by another (non-moving) ship is rejected; the same hex is fine when
@@ -1528,11 +1827,11 @@ func _test_deployment_rules() -> void:
 	wide.setup_fleet([
 		{ "ship_id": &"helium_scout", "side": 0, "hex": Vector2i(2, 12), "facing": 1 },
 		{ "ship_id": &"zodanga_cruiser", "side": 1,
-			"hex": Vector2i(TurnEngine.DEPLOY_ZONE_COLS + 2, 12), "facing": 4 },
+			"hex": Vector2i(TurnEngine.DEFAULT_DEPLOY_ZONE_COLS + 2, 12), "facing": 4 },
 	], 7)
 	var foe := wide.ships[1]
-	var inside := foe.hex - Vector2i(TurnEngine.DEPLOY_MIN_SEPARATION - 1, 0)
-	var beyond := foe.hex - Vector2i(TurnEngine.DEPLOY_MIN_SEPARATION, 0)
+	var inside := foe.hex - Vector2i(TurnEngine.DEFAULT_DEPLOY_MIN_SEPARATION - 1, 0)
+	var beyond := foe.hex - Vector2i(TurnEngine.DEFAULT_DEPLOY_MIN_SEPARATION, 0)
 	if wide._in_deploy_band(inside, 0):
 		_check(not wide.is_legal_deploy_hex(inside, 0),
 				"hex within DEPLOY_MIN_SEPARATION of an enemy is rejected")
@@ -1545,7 +1844,7 @@ func _test_deployment_rules() -> void:
 	_check(hexes.size() > 0, "legal_deploy_hexes finds room for the player")
 	var all_legal := true
 	for h in hexes:
-		if not e.is_legal_deploy_hex(h, 0, player) or h.x >= TurnEngine.DEPLOY_ZONE_COLS:
+		if not e.is_legal_deploy_hex(h, 0, player) or h.x >= TurnEngine.DEFAULT_DEPLOY_ZONE_COLS:
 			all_legal = false
 	_check(all_legal, "every hex from legal_deploy_hexes is legal and in-band")
 
@@ -1961,6 +2260,41 @@ func _play_out_brains(engine: TurnEngine, brains: Array) -> Dictionary:
 # Save / load: serialize the engine (ships + RNG + turn/phase + queues) and
 # restore it exactly — the persistence layer is pure rules, headless-testable.
 # ---------------------------------------------------------------------------
+
+## Regression (T3): a pre-migration save stored terrain as the old int enum
+## (0=hill, 1=tower, 2=dust_storm). Loading one must upgrade those ints to string
+## kind ids so the resume autosave survives — otherwise an int reaches the
+## string-id TerrainDef facade and crashes (the _has_dust bug). Post-T3 saves
+## (string terrain) round-trip unchanged.
+func _test_save_legacy_terrain_migration() -> void:
+	var eng := TurnEngine.new()
+	eng.setup(1)                                   # real ships so _missing_dependency passes
+	var legacy := SaveGame.engine_to_dict(eng)
+	legacy["terrain"] = { Vector2i(1, 1): 0, Vector2i(2, 2): 1, Vector2i(3, 3): 2 }
+	var restored := SaveGame.dict_to_engine(legacy)
+	_check(restored != null, "a legacy int-terrain save still loads")
+	_check_eq(restored.terrain[Vector2i(1, 1)], &"hill", "legacy terrain 0 → hill")
+	_check_eq(restored.terrain[Vector2i(2, 2)], &"tower", "legacy terrain 1 → tower")
+	_check_eq(restored.terrain[Vector2i(3, 3)], &"dust_storm", "legacy terrain 2 → dust_storm")
+	# The migrated ids drive the rules with no int→StringName crash (the bug).
+	_check_eq(TerrainDef.spot_penalty(restored.terrain[Vector2i(3, 3)]), 1,
+			"migrated dust still imposes a spotting penalty (no crash)")
+	# An unrecognised legacy int degrades to 'no terrain', never a crash.
+	var junk := SaveGame.engine_to_dict(eng)
+	junk["terrain"] = { Vector2i(4, 4): 99 }
+	_check_eq(SaveGame.dict_to_engine(junk).terrain[Vector2i(4, 4)], TerrainDef.NONE,
+			"an unknown legacy terrain int becomes the empty sentinel")
+	# A post-T3 save (string terrain from apply_map) round-trips unchanged.
+	var modern := SaveGame.dict_to_engine(SaveGame.engine_to_dict(eng))
+	_check_eq(modern.terrain, eng.terrain, "post-T3 string terrain round-trips unchanged")
+
+	# T6 guard: a save naming a terrain kind the catalog no longer provides (a
+	# removed mod) declines cleanly rather than silently dropping that terrain.
+	var orphan := SaveGame.engine_to_dict(eng)
+	orphan["terrain"] = { Vector2i(5, 5): "ghost_kind" }
+	_check(SaveGame.dict_to_engine(orphan) == null, "a save with an unknown terrain kind declines")
+	_check(SaveGame.load_error != "", "the terrain-kind decline sets a load_error")
+
 
 func _test_save_roundtrip() -> void:
 	# Build an engine, then rough up the state so every serialized field carries

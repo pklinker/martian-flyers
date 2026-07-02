@@ -418,10 +418,14 @@ func _show_bar(ph: DemoPhase) -> void:
 func _new_game() -> void:
 	var e := TurnEngine.new()
 	var seed := int(Time.get_unix_time_from_system())
+	# The map chosen on the menu, falling back to the default if it's gone (e.g. a
+	# removed mod). The engine would crash on an unknown id, so guard here.
+	var map: StringName = BattleConfig.map_id if MapLibrary.has_map(BattleConfig.map_id) \
+			else TurnEngine.DEFAULT_MAP_ID
 	if BattleConfig.pending and not BattleConfig.player_roster.is_empty() \
 			and not BattleConfig.ai_roster.is_empty():
 		# Fleets chosen in the points-buy builder: lay them on deployment lines.
-		e.setup_rosters(BattleConfig.player_roster, BattleConfig.ai_roster, seed)
+		e.setup_rosters(BattleConfig.player_roster, BattleConfig.ai_roster, seed, map)
 	else:
 		# Quick Battle default: your squadron (Scout + One-Man Flyer) against the
 		# AI's (Cruiser + Battleship), nose-to-nose (the engine nudges any clash).
@@ -430,7 +434,7 @@ func _new_game() -> void:
 			{ "ship_id": &"one_man_flyer", "side": PLAYER_SIDE, "hex": Vector2i(20, 12), "facing": 1 },
 			{ "ship_id": &"zodanga_cruiser", "side": AI_SIDE, "hex": Vector2i(32, 4), "facing": 4 },
 			{ "ship_id": &"helium_battleship", "side": AI_SIDE, "hex": Vector2i(32, 6), "facing": 4 },
-		], seed)
+		], seed, map)
 	_bind_engine(e)
 	_alloc = {}
 	_alloc_initialized = false
@@ -438,7 +442,8 @@ func _new_game() -> void:
 	_fire_focus = {}
 	_fire_choice = {}
 	log_box.clear()
-	log_box.append_text("Engagement over the dead sea bottom. You command the blue squadron.\n")
+	log_box.append_text("Engagement over %s. You command the blue squadron.\n"
+			% MapLibrary.map(map).display_name)
 	_enter_deploy()
 
 
@@ -891,7 +896,7 @@ func _has_dust() -> bool:
 	if engine == null:
 		return false
 	for t in engine.terrain.values():
-		if int(t) == TerrainDef.Type.DUST_STORM:
+		if TerrainDef.spot_penalty(t) > 0:
 			return true
 	return false
 

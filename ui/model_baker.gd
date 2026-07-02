@@ -13,8 +13,6 @@ extends Node
 
 signal baked   # a new sprite landed in the cache; listeners should queue_redraw
 
-const TERRAIN_DIR := "res://assets/terrain/"
-const BUILDINGS_DIR := "res://assets/buildings/"
 const SHIP_DIR := "res://assets/ships/"
 const BAKE_SIZE := 192                  # px square of each baked sprite
 const AZIMUTH_BUCKETS := 24             # rotation snap for the cache (15° each)
@@ -23,7 +21,7 @@ const TOPDOWN_ELEVATION_DEG := 89.0     # near-straight-down for the flat view
 
 enum View { TOPDOWN, ISO }
 
-## key (int TerrainDef.Type, or StringName ship-model) -> Array[PackedScene] variants.
+## key (StringName — a terrain-kind id or a ship-model name) -> Array[PackedScene] variants.
 var _models: Dictionary = {}
 ## key -> { frame: float (camera world-units to fit the model),
 ##          span: float (on-screen size in hex-units),
@@ -52,13 +50,21 @@ func _ready() -> void:
 func scan_assets() -> void:
 	_models.clear()
 	_cfg.clear()
-	# Terrain/buildings: authored in hex units (ART_PLAN §4b). frame ≈ model extent,
-	# span ≈ hexes covered on screen, look_y ≈ mid-height, anchor ≈ fraction down the
-	# sprite where the hex centre (model base) sits. Towers are buildings (buildings/).
-	_register(TerrainDef.Type.HILL, TERRAIN_DIR, "hill", 2.2, 2.0, 0.3, 0.58)
-	_register(TerrainDef.Type.TOWER, BUILDINGS_DIR, "tower", 2.0, 1.1, 0.7, 0.72)
-	if not has_model(TerrainDef.Type.TOWER):
-		_register(TerrainDef.Type.TOWER, TERRAIN_DIR, "tower", 2.0, 1.1, 0.7, 0.72)
+	# Terrain / building kinds come from the catalog: each kind with a render.model
+	# block registers a bake entry keyed by its id, resolving assets against the
+	# kind's source_root (res:// for core, user://mods/<pack>/ for a mod — §0.3).
+	# Authoring units are hex-relative (ART_PLAN §4b): frame ≈ model extent, span ≈
+	# hexes covered, look_y ≈ mid-height, anchor ≈ fraction down the sprite where the
+	# hex centre sits. (Runtime glb loading from user:// mod packs is T5; core kinds
+	# resolve to res:// and load via the editor-baked path today.)
+	for kid in MapLibrary.kind_ids():
+		var k := MapLibrary.kind(kid)
+		if not k.has_model():
+			continue
+		var mdl: Dictionary = k.render["model"]
+		var dir := k.source_root.path_join("assets").path_join(String(mdl["dir"])) + "/"
+		_register(kid, dir, String(mdl["prefix"]),
+				float(mdl["frame"]), float(mdl["span"]), float(mdl["look_y"]), float(mdl["anchor"]))
 	# Ships: AI-authored without a strict scale spec, so frame is tuned by eye to fill
 	# the bake; span keeps every class a readable size; anchor centres the hovering hull.
 	_register(&"scout", SHIP_DIR, "scout", 2.0, 1.7, 0.2, 0.5)
@@ -68,15 +74,52 @@ func scan_assets() -> void:
 func _register(key: Variant, dir: String, prefix: String, frame: float, span: float, look_y: float, anchor: float) -> void:
 	var variants: Array[PackedScene] = []
 	for i in range(1, 6):
-		var path := "%s%s_%d.glb" % [dir, prefix, i]
-		if ResourceLoader.exists(path):
-			var res := load(path)
-			if res is PackedScene:
-				variants.append(res)
+		var v := _load_variant("%s%s_%d.glb" % [dir, prefix, i])
+		if v != null:
+			variants.append(v)
 	if variants.is_empty():
 		return
 	_models[key] = variants
 	_cfg[key] = {"frame": frame, "span": span, "look_y": look_y, "anchor": anchor}
+
+
+## Load one model variant as a PackedScene, or null if absent / unloadable.
+## Editor-imported res:// assets resolve to their baked scene via ResourceLoader
+## (the fast path core kinds use). A user:// mod glb has NO .import sidecar, so
+## it is imported at runtime with GLTFDocument and packed into a scene — the path
+## the T1 spike proved (MAP_MODDING.md §0.4; tests/spike_runtime_glb.gd).
+static func _load_variant(path: String) -> PackedScene:
+	if path.begins_with("res://"):
+		if ResourceLoader.exists(path):
+			var res := load(path)
+			if res is PackedScene:
+				return res
+		return null
+	# Mod asset (user:// etc.): runtime glTF import → PackedScene.
+	if not FileAccess.file_exists(path):
+		return null
+	var doc := GLTFDocument.new()
+	var state := GLTFState.new()
+	if doc.append_from_file(ProjectSettings.globalize_path(path), state) != OK:
+		return null
+	var scene := doc.generate_scene(state)
+	if not (scene is Node3D):
+		if scene != null:
+			scene.free()
+		return null
+	# pack() only keeps descendants whose owner is set — the spike's one gotcha.
+	_own_all(scene, scene)
+	var packed := PackedScene.new()
+	var ok := packed.pack(scene)
+	scene.free()
+	return packed if ok == OK else null
+
+## Recursively set `owner_node` as the owner of every descendant so PackedScene
+## .pack() captures the whole runtime-imported subtree.
+static func _own_all(node: Node, owner_node: Node) -> void:
+	for c in node.get_children():
+		c.owner = owner_node
+		_own_all(c, owner_node)
 
 func has_model(key: Variant) -> bool:
 	return _models.has(key) and not (_models[key] as Array).is_empty()

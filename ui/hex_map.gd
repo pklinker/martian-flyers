@@ -625,13 +625,13 @@ func _draw() -> void:
 			var c := hex_to_pixel(hex)
 			if c.x < -cull or c.x > size.x + cull or c.y < -cull or c.y > size.y + cull:
 				continue
-			var t: int = engine.terrain[hex]
+			var t: StringName = engine.terrain[hex]
 			# Dust hexes backed by an authored sprite are drawn entirely by that sprite
 			# once the field tilts into iso — the flat ochre tint and "D" label would
 			# just show through beneath it, so suppress them here. Overhead (no sprite
 			# drawn) keeps the flat haze + label.
-			if t == TerrainDef.Type.DUST_STORM and iso_k > 0.02 \
-					and _dust_sprites != null and _dust_sprites.has_sprites():
+			if TerrainDef.is_sprite(t) and iso_k > 0.02 \
+					and _dust_sprites != null and _dust_sprites.has_sprites(t):
 				continue
 			var col := TerrainDef.render_color(t)
 			var pts := _hex_corners(hex)
@@ -686,8 +686,8 @@ func _draw() -> void:
 	# does it rise into prisms/dust columns. Keeps overhead identical to the old map.
 	if iso_k > 0.02:
 		for hex: Vector2i in engine.terrain:
-			var t: int = engine.terrain[hex]
-			var kind := "dust" if t == TerrainDef.Type.DUST_STORM else "terrain"
+			var t: StringName = engine.terrain[hex]
+			var kind := "dust" if TerrainDef.is_sprite(t) else "terrain"
 			objs.append({"depth": _depth_of(HexMath.to_cartesian(hex)), "kind": kind,
 					"hex": hex, "type": t})
 	for s in engine.ships:
@@ -697,7 +697,7 @@ func _draw() -> void:
 	for o in objs:
 		match o["kind"]:
 			"terrain": _draw_terrain_model(font, o["hex"], o["type"])
-			"dust": _draw_dust(o["hex"])
+			"dust": _draw_dust(o["hex"], o["type"])
 			"ship": _draw_ship(font, o["ship"])
 
 	# Fire-target reticles: a red ring + crosshair over each enemy the active
@@ -850,13 +850,13 @@ static func _facing_dir_deg(deg: float) -> Vector2:
 
 
 ## Footprint radius (hex units) of a terrain prism: hills fill the hex, towers are a
-## narrow column standing on the tile.
-func _terrain_radius(t: int) -> float:
-	return 0.42 if t == TerrainDef.Type.TOWER else 1.0
+## narrow column standing on the tile. Data-driven per kind (render.footprint).
+func _terrain_radius(t: StringName) -> float:
+	return TerrainDef.render_footprint(t)
 
 
 ## Deterministic model variant for a hex, so a given hill always looks the same.
-func _terrain_variant(hex: Vector2i, t: int) -> int:
+func _terrain_variant(hex: Vector2i, t: StringName) -> int:
 	var n := _baker.variant_count(t)
 	return posmod(hex.x * 7 + hex.y * 13, n) if n > 0 else 0
 
@@ -878,7 +878,7 @@ func _draw_feature_shadow(ring: PackedVector2Array, height: float, sh_k: float) 
 ## Draw a terrain feature using its authored 3D model when one exists, else the prism.
 ## The baked sprite is blitted at the hex with a soft ground shadow; if the needed angle
 ## isn't baked yet we request it and draw the prism this frame (it pops in on `baked`).
-func _draw_terrain_model(font: Font, hex: Vector2i, t: int) -> void:
+func _draw_terrain_model(font: Font, hex: Vector2i, t: StringName) -> void:
 	if _baker == null or not _baker.has_model(t):
 		_draw_terrain_prism(font, hex, t)
 		return
@@ -917,7 +917,7 @@ func _draw_terrain_model(font: Font, hex: Vector2i, t: int) -> void:
 ## Draw a terrain feature as an extruded prism: a cast ground shadow, the visible side
 ## walls shaded by their orientation to the sun (sorted back-to-front), then the lit top
 ## face. Reads as flat in overhead (height_scale 0 collapses the walls to nothing).
-func _draw_terrain_prism(font: Font, hex: Vector2i, t: int) -> void:
+func _draw_terrain_prism(font: Font, hex: Vector2i, t: StringName) -> void:
 	var base := HexMath.to_cartesian(hex)
 	var height := TerrainDef.render_height(t)
 	var rad := _terrain_radius(t)
@@ -967,13 +967,13 @@ func _draw_terrain_prism(font: Font, hex: Vector2i, t: int) -> void:
 ## A dust storm as a billowing column of drifting translucent puffs rising off its
 ## tile (the flat ochre tint is already laid down in the ground pass). The puffs only
 ## swell in iso — overhead keeps the clean flat haze. Animated on _anim_t.
-func _draw_dust(hex: Vector2i) -> void:
+func _draw_dust(hex: Vector2i, kind: StringName) -> void:
 	var k := clampf(_height_scale / ISO_HEIGHT, 0.0, 1.0)
 	if k < 0.01:
 		return
-	# Authored animation if one's present; otherwise the hand-drawn puff column below.
-	if _dust_sprites != null and _dust_sprites.has_sprites():
-		_draw_dust_sprite(hex, k)
+	# Authored animation if this kind has a sheet; otherwise the hand-drawn puffs.
+	if _dust_sprites != null and _dust_sprites.has_sprites(kind):
+		_draw_dust_sprite(hex, kind, k)
 		return
 	var base := HexMath.to_cartesian(hex)
 	var seed := float(hex.x * 3 + hex.y * 5)
@@ -991,15 +991,19 @@ func _draw_dust(hex: Vector2i) -> void:
 ## Blit the current frame of an authored dust-storm sheet at the hex. The variant is
 ## chosen by a hex hash (so a tile always storms the same), the frame advances on the
 ## shared _anim_t clock, and the whole thing fades in with the tilt like the puffs.
-func _draw_dust_sprite(hex: Vector2i, k: float) -> void:
-	var n := _dust_sprites.variant_count()
+func _draw_dust_sprite(hex: Vector2i, kind: StringName, k: float) -> void:
+	var n := _dust_sprites.variant_count(kind)
 	var variant := posmod(hex.x * 3 + hex.y * 5, n)
-	var frame := _dust_sprites.frame_for_time(variant, _anim_t)
-	var region := _dust_sprites.frame_region(variant, frame)
+	var frame := _dust_sprites.frame_for_time(kind, variant, _anim_t)
+	var region := _dust_sprites.frame_region(kind, variant, frame)
 	var ground := project(HexMath.to_cartesian(hex), 0.0)
-	var w := DustSprites.FRAME_SPAN_UNITS * hex_size
-	var rect := Rect2(ground - Vector2(w * 0.5, w * DustSprites.GROUND_ANCHOR), Vector2(w, w))
-	draw_texture_rect_region(_dust_sprites.texture(variant), rect, region, Color(1.0, 1.0, 1.0, k))
+	# On-screen size from the kind's render.sprite (falls back to the defaults).
+	var sprite: Dictionary = MapLibrary.kind(kind).render.get("sprite", {})
+	var span := float(sprite.get("span", DustSprites.FRAME_SPAN_UNITS))
+	var anchor := float(sprite.get("anchor", DustSprites.GROUND_ANCHOR))
+	var w := span * hex_size
+	var rect := Rect2(ground - Vector2(w * 0.5, w * anchor), Vector2(w, w))
+	draw_texture_rect_region(_dust_sprites.texture(kind, variant), rect, region, Color(1.0, 1.0, 1.0, k))
 
 
 ## Seed the ambient cloud field once the board size is known. Deterministic so clouds
